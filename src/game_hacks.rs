@@ -190,6 +190,19 @@ fn save_orig(env: &mut Environment, class_name: &str, selector: &str, cell: &Ato
     }
 }
 
+/// Replacement for `-[PlayerData changeSecondaryCurrency:]`: gems never run
+/// out, so spending always succeeds. The ivar is also kept topped up, since
+/// some code reads it directly.
+fn bt_change_gems(env: &mut Environment, this: id, _cmd: SEL, _amount: i32) -> bool {
+    const SECONDARY_CURRENCY_IVAR_OFFSET_VAR: u32 = 0x4b6118;
+    let off: u32 = env
+        .mem
+        .read(Ptr::<u32, true>::from_bits(SECONDARY_CURRENCY_IVAR_OFFSET_VAR));
+    env.mem
+        .write(Ptr::<i32, true>::from_bits(this.to_bits() + off), 99_999);
+    true
+}
+
 fn bt_skip_tutorial(_env: &mut Environment, _this: id, _cmd: SEL, _t: id) {}
 
 pub fn apply(env: &mut Environment) {
@@ -231,6 +244,12 @@ pub fn apply(env: &mut Environment) {
         "PlayerData",
         "secondaryCurrency",
         &(bt_unlimited_gems as fn(&mut Environment, id, SEL) -> i32),
+    );
+    override_method(
+        env,
+        "PlayerData",
+        "changeSecondaryCurrency:",
+        &(bt_change_gems as fn(&mut Environment, id, SEL, i32) -> bool),
     );
     override_method(
         env,
