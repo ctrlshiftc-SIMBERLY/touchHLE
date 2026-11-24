@@ -1254,6 +1254,26 @@ pub const CLASSES: ClassExports = objc_classes! {
     autorelease(env, res)
 }
 
+- (id)capitalizedString {
+    // First character of each word uppercase, the rest lowercase.
+    let src = to_rust_string(env, this).to_string();
+    let mut out = String::with_capacity(src.len());
+    let mut at_word_start = true;
+    for c in src.chars() {
+        if c.is_whitespace() {
+            at_word_start = true;
+            out.push(c);
+        } else if at_word_start {
+            out.extend(c.to_uppercase());
+            at_word_start = false;
+        } else {
+            out.extend(c.to_lowercase());
+        }
+    }
+    let res = from_rust_string(env, out);
+    autorelease(env, res)
+}
+
 @end
 
 // NSMutableString is an abstract class. A subclass must everything
