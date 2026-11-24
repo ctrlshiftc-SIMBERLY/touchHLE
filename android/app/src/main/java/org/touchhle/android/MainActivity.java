@@ -35,11 +35,64 @@ public class MainActivity extends SDLActivity {
         };
     }
 
+    private static final int PICK_APP_REQUEST = 4242;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         // Import before touchHLE starts, so the app picker sees the file.
         importAppFromIntent(getIntent(), false);
         super.onCreate(savedInstanceState);
+        // No apps yet? Offer a file picker so the user can add one without
+        // needing a file manager that can reach Android/data.
+        if (savedInstanceState == null && !hasAnyApps()) {
+            try {
+                Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                pick.addCategory(Intent.CATEGORY_OPENABLE);
+                pick.setType("*/*");
+                startActivityForResult(pick, PICK_APP_REQUEST);
+                Toast.makeText(this, "Pick your .ipa file to add it to touchHLE",
+                        Toast.LENGTH_LONG).show();
+            } catch (Exception e) {
+                // No document picker available; carry on.
+            }
+        }
+    }
+
+    private boolean hasAnyApps() {
+        File dir = new File(getExternalFilesDir(null), "touchHLE_apps");
+        String[] names = dir.list();
+        if (names == null) {
+            return false;
+        }
+        for (String n : names) {
+            String l = n.toLowerCase();
+            if (l.endsWith(".ipa") || l.endsWith(".app")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == PICK_APP_REQUEST) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                Intent view = new Intent(Intent.ACTION_VIEW, data.getData());
+                if (importAppFromIntent(view, false)) {
+                    // touchHLE has already scanned for apps, so restart it.
+                    Intent restart = getPackageManager()
+                            .getLaunchIntentForPackage(getPackageName());
+                    if (restart != null) {
+                        restart.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                                | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                        startActivity(restart);
+                    }
+                    Runtime.getRuntime().exit(0);
+                }
+            }
+            return;
+        }
+        super.onActivityResult(requestCode, resultCode, data);
     }
 
     @Override
@@ -52,9 +105,9 @@ public class MainActivity extends SDLActivity {
      * Copies an .ipa that was opened with or shared to touchHLE into the
      * touchHLE_apps directory.
      */
-    private void importAppFromIntent(Intent intent, boolean alreadyRunning) {
+    private boolean importAppFromIntent(Intent intent, boolean alreadyRunning) {
         if (intent == null) {
-            return;
+            return false;
         }
         Uri uri = null;
         String action = intent.getAction();
@@ -64,7 +117,7 @@ public class MainActivity extends SDLActivity {
             uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
         }
         if (uri == null) {
-            return;
+            return false;
         }
         String name = displayName(uri);
         if (name == null || name.isEmpty()) {
@@ -91,9 +144,12 @@ public class MainActivity extends SDLActivity {
         } catch (Exception e) {
             dest.delete();
             Toast.makeText(this, "Couldn't add " + name + ": " + e, Toast.LENGTH_LONG).show();
+            intent.setAction(Intent.ACTION_MAIN);
+            return false;
         }
         // Don't import the same file again if the activity is recreated.
         intent.setAction(Intent.ACTION_MAIN);
+        return true;
     }
 
     private String displayName(Uri uri) {
