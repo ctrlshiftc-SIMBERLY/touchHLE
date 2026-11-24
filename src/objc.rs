@@ -45,7 +45,8 @@ pub use properties::todo_objc_setter;
 pub use selectors::{selector, SEL};
 
 use classes::{
-    class_getInstanceSize, class_getMethodImplementation, class_getProperty, class_getSuperclass,
+    class_getClassMethod, class_getInstanceMethod, class_getInstanceSize, class_getMethodImplementation,
+    method_getImplementation, method_getNumberOfArguments, method_getTypeEncoding, class_getProperty, class_getSuperclass,
     class_replaceMethod, objc_getClass, ClassHostObject, FakeClass, UnimplementedClass,
 };
 pub(crate) use messages::objc_msgSend;
@@ -123,6 +124,11 @@ const CONSTANTS: ConstantExports = &[
 
 const FUNCTIONS: FunctionExports = &[
     export_c_func!(class_getInstanceSize(_)),
+    export_c_func!(class_getInstanceMethod(_, _)),
+    export_c_func!(class_getClassMethod(_, _)),
+    export_c_func!(method_getImplementation(_)),
+    export_c_func!(method_getNumberOfArguments(_)),
+    export_c_func!(method_getTypeEncoding(_)),
     export_c_func!(class_getSuperclass(_)),
     export_c_func!(class_getProperty(_, _)),
     export_c_func!(class_getMethodImplementation(_, _)),

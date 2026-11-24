@@ -26,6 +26,16 @@ use crate::objc::{
 };
 use crate::Environment;
 
+fn method_signature(env: &mut Environment, class: Class, selector: SEL) -> id {
+    let Some(&types) = env.objc.class_get_method_signature(class, selector) else {
+        return nil;
+    };
+    if types.is_null() {
+        return nil;
+    }
+    msg_class![env; NSMethodSignature signatureWithObjCTypes:types]
+}
+
 /// Implementation of `methodForSelector:` and friends. Guest methods are
 /// returned directly. Host methods have no guest address, so instead the
 /// address of `objc_msgSend` is returned: an IMP is called with the same
@@ -130,6 +140,15 @@ pub const CLASSES: ClassExports = objc_classes! {
 + (MutVoidPtr)methodForSelector:(SEL)selector {
     let metaclass = ObjC::read_isa(this, &env.mem);
     method_for_selector(env, metaclass, selector)
+}
+
++ (id)methodSignatureForSelector:(SEL)selector {
+    let metaclass = ObjC::read_isa(this, &env.mem);
+    method_signature(env, metaclass, selector)
+}
+
++ (id)instanceMethodSignatureForSelector:(SEL)selector {
+    method_signature(env, this, selector)
 }
 
 + (MutVoidPtr)instanceMethodForSelector:(SEL)selector {
@@ -420,6 +439,11 @@ forUndefinedKey:(id)key { // NSString*
 }
 - (())didChangeValueForKey:(id)_key { // NSString *
     log_once!("TODO: NSObject didChangeValueForKey:");
+}
+
+- (id)methodSignatureForSelector:(SEL)selector {
+    let class = ObjC::read_isa(this, &env.mem);
+    method_signature(env, class, selector)
 }
 
 - (MutVoidPtr)methodForSelector:(SEL)selector {

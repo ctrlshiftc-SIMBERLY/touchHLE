@@ -376,6 +376,9 @@ fn glShadeModel(env: &mut Environment, mode: GLenum) {
     with_ctx_and_mem(env, |gles, _mem| unsafe { gles.ShadeModel(mode) })
 }
 fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {
+    if std::env::var_os("TOUCHHLE_GL_DEBUG").is_some() {
+        log!("glScissor({}, {}, {}, {})", x, y, width, height);
+    }
     // apply scale hack: assume framebuffer's size is larger than the app thinks
     // and scale scissor appropriately
     let factor = env.options.scale_hack.get() as GLsizei;

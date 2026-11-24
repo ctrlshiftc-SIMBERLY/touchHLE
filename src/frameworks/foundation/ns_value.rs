@@ -36,7 +36,7 @@ impl HostObject for NSValueHostObject {}
 
 /// Computes (size, alignment) of an Objective-C type encoding, for the
 /// simple cases used with NSValue. Returns the remaining unparsed string.
-fn objc_type_size(enc: &[u8]) -> (u32, u32, &[u8]) {
+pub(crate) fn objc_type_size(enc: &[u8]) -> (u32, u32, &[u8]) {
     let mut enc = enc;
     // skip type qualifiers
     while let Some(&c) = enc.first() {
@@ -508,6 +508,23 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (bool)boolValue {
     env.objc.borrow::<NSNumberHostObject>(this).as_bool()
+}
+
+- (ConstPtr<u8>)objCType {
+    let t: &[u8] = match env.objc.borrow::<NSNumberHostObject>(this) {
+        NSNumberHostObject::Bool(_) => b"c",
+        NSNumberHostObject::UnsignedLongLong(_) => b"Q",
+        NSNumberHostObject::UnsignedInt(_) => b"I",
+        NSNumberHostObject::Int(_) => b"i",
+        NSNumberHostObject::LongLong(_) => b"q",
+        NSNumberHostObject::Float(_) => b"f",
+        NSNumberHostObject::Double(_) => b"d",
+        NSNumberHostObject::Short(_) => b"s",
+        NSNumberHostObject::UnsignedShort(_) => b"S",
+        NSNumberHostObject::Char(_) => b"c",
+    };
+    let t = t.to_vec();
+    env.mem.alloc_and_write_cstr(&t).cast_const()
 }
 
 - (NSInteger)integerValue {

@@ -1137,3 +1137,95 @@ pub(super) fn class_getMethodImplementation(env: &mut Environment, cls: Class, n
         class = next;
     }
 }
+
+/// Returns a guest `Method` (`{SEL name; const char *types; IMP imp}`) for a
+/// guest-implemented method, or NULL. Host methods aren't supported.
+pub(super) fn class_getInstanceMethod(
+    env: &mut Environment,
+    cls: Class,
+    name: SEL,
+) -> crate::mem::MutVoidPtr {
+    if cls == nil {
+        return crate::mem::Ptr::null();
+    }
+    let Ok(Some(imp)) = env.objc.class_find_guest_imp(cls, name) else {
+        return crate::mem::Ptr::null();
+    };
+    let types = env
+        .objc
+        .class_get_method_signature(cls, name)
+        .copied()
+        .unwrap_or(crate::mem::Ptr::null());
+    let m: crate::mem::MutPtr<u32> = env.mem.alloc(12).cast();
+    env.mem.write(m.cast::<SEL>(), name);
+    env.mem.write(m + 1, types.to_bits());
+    env.mem.write(m + 2, imp.addr_with_thumb_bit());
+    m.cast()
+}
+
+pub(super) fn class_getClassMethod(
+    env: &mut Environment,
+    cls: Class,
+    name: SEL,
+) -> crate::mem::MutVoidPtr {
+    if cls == nil {
+        return crate::mem::Ptr::null();
+    }
+    let meta = ObjC::read_isa(cls, &env.mem);
+    class_getInstanceMethod(env, meta, name)
+}
+
+pub(super) fn method_getTypeEncoding(
+    env: &mut Environment,
+    m: crate::mem::ConstPtr<u32>,
+) -> crate::mem::ConstPtr<u8> {
+    if m.is_null() {
+        return crate::mem::Ptr::null();
+    }
+    crate::mem::Ptr::from_bits(env.mem.read(m + 1))
+}
+
+pub(super) fn method_getImplementation(
+    env: &mut Environment,
+    m: crate::mem::ConstPtr<u32>,
+) -> crate::mem::ConstVoidPtr {
+    if m.is_null() {
+        return crate::mem::Ptr::null();
+    }
+    crate::mem::Ptr::from_bits(env.mem.read(m + 2))
+}
+
+pub(super) fn method_getNumberOfArguments(
+    env: &mut Environment,
+    m: crate::mem::ConstPtr<u32>,
+) -> u32 {
+    let types = method_getTypeEncoding(env, m);
+    if types.is_null() {
+        return 0;
+    }
+    let bytes = env.mem.cstr_at(types).to_vec();
+    // skip return type, then count argument types (digits are frame offsets)
+    let mut rest: &[u8] = &bytes;
+    let mut count = 0u32;
+    let mut first = true;
+    while !rest.is_empty() {
+        let (_, _, r) = crate::frameworks::foundation::ns_value::objc_type_size(rest);
+        if r.len() == rest.len() {
+            break;
+        }
+        rest = r;
+        while let Some(c) = rest.first() {
+            if c.is_ascii_digit() || *c == b'-' {
+                rest = &rest[1..];
+            } else {
+                break;
+            }
+        }
+        if first {
+            first = false;
+        } else {
+            count += 1;
+        }
+    }
+    count
+}

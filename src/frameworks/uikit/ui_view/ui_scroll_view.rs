@@ -101,6 +101,21 @@ pub const CLASSES: ClassExports = objc_classes! {
     bounds.origin = offset;
     () = msg![env; this setBounds:bounds];
     () = msg![env; this setNeedsDisplay];
+
+    // Like real UIKit, tell the delegate about every offset change.
+    let delegate: id = msg![env; this delegate];
+    if delegate != nil {
+        let sel: SEL = env
+            .objc
+            .register_host_selector("scrollViewDidScroll:".to_string(), &mut env.mem);
+        let responds: bool = msg![env; delegate respondsToSelector:sel];
+        if responds {
+            () = msg![env; delegate scrollViewDidScroll:this];
+        }
+    }
+}
+- (())setContentOffset:(CGPoint)offset animated:(bool)_animated {
+    () = msg![env; this setContentOffset:offset];
 }
 
 - (CGSize)contentSize {
@@ -152,15 +167,6 @@ pub const CLASSES: ClassExports = objc_classes! {
     log_dbg!("content offset: old {:?}, new {:?}", offset, new_content_offset);
     if new_content_offset != offset {
         () = msg![env; this setContentOffset:new_content_offset];
-
-        let delegate: id = msg![env; this delegate];
-        let sel: SEL = env
-            .objc
-            .register_host_selector("scrollViewDidScroll:".to_string(), &mut env.mem);
-        let responds: bool = msg![env; delegate respondsToSelector:sel];
-        if responds {
-            () = msg![env; delegate scrollViewDidScroll:this];
-        }
     }
 }
 

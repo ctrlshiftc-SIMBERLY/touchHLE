@@ -190,6 +190,8 @@ fn save_orig(env: &mut Environment, class_name: &str, selector: &str, cell: &Ato
     }
 }
 
+fn bt_skip_tutorial(_env: &mut Environment, _this: id, _cmd: SEL, _t: id) {}
+
 pub fn apply(env: &mut Environment) {
     if env.bundle.bundle_identifier() != "com.breaktime.fashion" {
         return;
@@ -214,6 +216,14 @@ pub fn apply(env: &mut Environment) {
             "IsoNPC",
             "update:",
             &(bt_npc_update_debug as fn(&mut Environment, id, SEL, f32)),
+        );
+    }
+    if std::env::var_os("TOUCHHLE_SKIP_TUTORIAL").is_some() {
+        override_method(
+            env,
+            "TutorialManager",
+            "startTutorial:",
+            &(bt_skip_tutorial as fn(&mut Environment, id, SEL, id)),
         );
     }
     override_method(

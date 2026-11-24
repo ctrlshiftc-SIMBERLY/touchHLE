@@ -134,35 +134,12 @@ pub const CLASSES: ClassExports = objc_classes! {
         env.mem.free(prev_arg.cast());
     }
 
-    let argument_types: &Vec<String> = env.objc.borrow::<NSInvocationHostObject>(this).argument_types.as_ref();
-    let arg_type = argument_types.get(idx as usize).unwrap();
-    let new: MutVoidPtr = match arg_type.as_str() {
-        "f" => {
-            let arg_loc: MutPtr<f32> = arg_loc.cast();
-            let arg = env.mem.read(arg_loc);
-            env.mem.alloc_and_write(arg).cast()
-        }
-        "@" => {
-            assert!(!arguments_retained); // TODO
-            let arg_loc: MutPtr<id> = arg_loc.cast();
-            let arg = env.mem.read(arg_loc);
-            env.mem.alloc_and_write(arg).cast()
-        }
-        "*" => {
-            assert!(!arguments_retained); // TODO
-            let arg_loc: MutPtr<MutPtr<u8>> = arg_loc.cast();
-            let arg = env.mem.read(arg_loc);
-            env.mem.alloc_and_write(arg).cast()
-        }
-        // pointer cases
-        _ if arg_type.starts_with('^') => {
-            let arg_loc: MutPtr<MutVoidPtr> = arg_loc.cast();
-            let arg = env.mem.read(arg_loc);
-            env.mem.alloc_and_write(arg).cast()
-        }
-        _ => unimplemented!("unhandled argument type {arg_type}"),
-    };
-
+    let _ = arguments_retained;
+    let arg_type = env.objc.borrow::<NSInvocationHostObject>(this).argument_types[idx as usize].clone();
+    let size = arg_size(arg_type.as_bytes()).max(1);
+    let new: MutVoidPtr = env.mem.alloc(size);
+    let bytes = env.mem.bytes_at(arg_loc.cast(), size).to_vec();
+    env.mem.bytes_at_mut(new.cast(), size).copy_from_slice(&bytes);
     env.objc.borrow_mut::<NSInvocationHostObject>(this).arguments[idx as usize] = Some(new);
 }
 
@@ -172,106 +149,65 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (())invoke {
-    // Safeguard: all arguments must be set (except first two)
-    let arguments: &Vec<Option<MutVoidPtr>> = env.objc.borrow::<NSInvocationHostObject>(this).arguments.as_ref();
-    let set_count = arguments.iter().flatten().count();
-    let all_count = arguments.len();
-    assert_eq!(set_count + 2, all_count);
-
     let sig = env.objc.borrow::<NSInvocationHostObject>(this).sig;
     let ret_type: ConstPtr<u8> = msg![env; sig methodReturnType];
-    assert!(env.mem.read(ret_type) == b'v'); // TODO
+    let ret_char = env.mem.read(ret_type);
 
-    // `call_from_host` re-use
-    // TODO: retval_ptr
-    // TODO: cross check against frame length from NSMethodSignature
-    let mut reg_count = 0;
-    let argument_types: &Vec<String> = env.objc.borrow::<NSInvocationHostObject>(this).argument_types.as_ref();
-    for arg_type in argument_types.iter() {
-        // TODO: refactor and simplify
-        reg_count += match arg_type.as_str() {
-            "@" => <id as GuestArg>::REG_COUNT,
-            ":" => <SEL as GuestArg>::REG_COUNT,
-            "f" => <f32 as GuestArg>::REG_COUNT,
-            "c" => <u8 as GuestArg>::REG_COUNT,
-            "*" => <MutPtr<u8> as GuestArg>::REG_COUNT,
-            // pointer cases
-            _ if arg_type.starts_with('^') => <MutVoidPtr as GuestArg>::REG_COUNT,
-            _ => unimplemented!("reg_count for {arg_type}")
-        }
-    }
-    let regs = env.cpu.regs_mut();
-    let old_sp = extend_stack_for_args(
-        reg_count,
-        regs,
-    );
-
-    let arguments: &Vec<Option<MutVoidPtr>> = env.objc.borrow::<NSInvocationHostObject>(this).arguments.as_ref();
-    let mut reg_offset = 0;
-    for i in 0..arguments.len() {
-        // TODO: do not handle target and sel as special cases
-        if i == 0 {
-            assert!(argument_types[i] == "@");
-            // target
-            let target = env.objc.borrow::<NSInvocationHostObject>(this).target;
-            let regs = env.cpu.regs_mut();
-            write_next_arg::<id>(&mut reg_offset, regs, &mut env.mem, target);
-            continue;
-        }
-        if i == 1 {
-            assert!(argument_types[i] == ":");
-            // selector
-            let selector = env.objc.borrow::<NSInvocationHostObject>(this).selector.unwrap();
-            let regs = env.cpu.regs_mut();
-            write_next_arg::<SEL>(&mut reg_offset, regs, &mut env.mem, selector);
-            continue;
-        }
-        let arg_slot = arguments[i].unwrap();
-        let arg_type = argument_types[i].as_str();
-        // TODO: refactor and simplify
-        match arg_type {
-            "@" => {
-                let arg: ConstPtr<id> = arg_slot.cast().cast_const();
-                let arg_val = env.mem.read(arg);
-                let regs = env.cpu.regs_mut();
-                write_next_arg::<id>(&mut reg_offset, regs, &mut env.mem, arg_val);
-            },
-            "f" => {
-                let arg: ConstPtr<f32> = arg_slot.cast().cast_const();
-                let arg_val = env.mem.read(arg);
-                let regs = env.cpu.regs_mut();
-                write_next_arg::<f32>(&mut reg_offset, regs, &mut env.mem, arg_val);
-            },
-            "c" => {
-                let arg: ConstPtr<u8> = arg_slot.cast().cast_const();
-                let arg_val = env.mem.read(arg);
-                let regs = env.cpu.regs_mut();
-                write_next_arg::<u8>(&mut reg_offset, regs, &mut env.mem, arg_val);
-            }
-            "*" => {
-                let arg: ConstPtr<MutPtr<u8>> = arg_slot.cast().cast_const();
-                let arg_val = env.mem.read(arg);
-                let regs = env.cpu.regs_mut();
-                write_next_arg::<MutPtr<u8>>(&mut reg_offset, regs, &mut env.mem, arg_val);
-            }
-            // pointer cases
-            _ if arg_type.starts_with('^') => {
-                let arg: ConstPtr<MutVoidPtr> = arg_slot.cast().cast_const();
-                let arg_val = env.mem.read(arg);
-                let regs = env.cpu.regs_mut();
-                write_next_arg::<MutVoidPtr>(&mut reg_offset, regs, &mut env.mem, arg_val);
-            }
-            _ => unimplemented!("write_next_arg for {arg_type}")
-        }
-    }
-
-    // actual invocation
+    // Flatten all arguments into 32-bit words following the ARM AAPCS
+    // (soft-float): everything goes into r0-r3 then the stack, 64-bit values
+    // are aligned to an even word.
+    let mut words: Vec<u32> = Vec::new();
     let &NSInvocationHostObject { target, selector, .. } = env.objc.borrow::<NSInvocationHostObject>(this);
-    objc_msgSend(env, target, selector.unwrap());
+    let selector = selector.unwrap();
+    words.push(target.to_bits());
+    let sel_words: [u32; 1] = { let mut r = [0u32; 1]; <SEL as GuestArg>::to_regs(selector, &mut r); r };
+    words.push(sel_words[0]);
+    let host = env.objc.borrow::<NSInvocationHostObject>(this);
+    let args: Vec<(String, Option<MutVoidPtr>)> = host
+        .argument_types
+        .iter()
+        .cloned()
+        .zip(host.arguments.iter().copied())
+        .skip(2)
+        .collect();
+    for (ty, slot) in args {
+        let size = arg_size(ty.as_bytes());
+        let first = ty.trim_start_matches(|c: char| "rnNoORV".contains(c)).bytes().next();
+        if matches!(first, Some(b'q' | b'Q' | b'd')) && words.len() % 2 == 1 {
+            words.push(0);
+        }
+        let n = size.div_ceil(4).max(1) as usize;
+        let mut buf = vec![0u8; n * 4];
+        if let Some(slot) = slot {
+            let bytes = env.mem.bytes_at(slot.cast(), size).to_vec();
+            buf[..bytes.len()].copy_from_slice(&bytes);
+        }
+        // sub-word integer types are extended to a full word
+        match first {
+            Some(b'c') => { let v = (buf[0] as i8 as i32).to_le_bytes(); buf[..4].copy_from_slice(&v) }
+            Some(b's') => { let v = (i16::from_le_bytes([buf[0], buf[1]]) as i32).to_le_bytes(); buf[..4].copy_from_slice(&v) }
+            _ => {}
+        }
+        for w in buf.chunks(4) {
+            words.push(u32::from_le_bytes([w[0], w[1], w[2], w[3]]));
+        }
+    }
+
+    let regs = env.cpu.regs_mut();
+    let old_sp = extend_stack_for_args(words.len(), regs);
+    let mut reg_offset = 0;
+    for w in words {
+        let regs = env.cpu.regs_mut();
+        write_next_arg::<u32>(&mut reg_offset, regs, &mut env.mem, w);
+    }
+
+    if ret_char == b'{' {
+        log!("TODO: NSInvocation with struct return, ignoring return value");
+    }
+    objc_msgSend(env, target, selector);
 
     let regs = env.cpu.regs_mut(); // re-borrow
     regs[Cpu::SP] = old_sp;
-    // TODO: non-void return
 }
 
 - (())dealloc {
@@ -304,3 +240,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 @end
 
 };
+
+fn arg_size(ty: &[u8]) -> u32 {
+    crate::frameworks::foundation::ns_value::objc_type_size(ty).0
+}

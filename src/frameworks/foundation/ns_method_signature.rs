@@ -98,23 +98,20 @@ fn parse_signature(
 }
 
 fn parse_signature_inner(env: &mut Environment, curr: ConstPtr<u8>) -> (GuestUSize, u32, u32) {
-    let mut idx = 0;
-    let c = env.mem.read(curr);
-    match c {
-        b'^' => {
-            // pointer
-            let (scanned, read, size) = parse_signature_inner(env, curr + 1);
-            (scanned + 1, read + 1, size)
-        }
-        b'v' | b'@' | b':' | b'f' | b'c' | b'*' | b'i' => {
-            idx += 1;
-            let mut size = 0;
-            while let cc @ b'0'..=b'9' = env.mem.read(curr + idx) {
-                size = size * 10 + (cc - b'0') as u32;
-                idx += 1;
-            }
-            (idx, 1, size)
-        }
-        _ => unimplemented!("parse_signature_inner: {}", c as char),
+    let bytes = env.mem.cstr_at(curr).to_vec();
+    let (_, _, rest) = crate::frameworks::foundation::ns_value::objc_type_size(&bytes);
+    let mut type_len = (bytes.len() - rest.len()) as u32;
+    if type_len == 0 && !bytes.is_empty() {
+        type_len = 1;
     }
+    let mut idx = type_len;
+    let mut size: u32 = 0;
+    if env.mem.read(curr + idx) == b'-' {
+        idx += 1;
+    }
+    while let cc @ b'0'..=b'9' = env.mem.read(curr + idx) {
+        size = size * 10 + (cc - b'0') as u32;
+        idx += 1;
+    }
+    (idx, type_len, size)
 }

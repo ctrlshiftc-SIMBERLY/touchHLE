@@ -310,6 +310,9 @@ pub(super) fn CGRectIntersection(_env: &mut Environment, rect1: CGRect, rect2: C
     }
 }
 
+fn CGRectIsEmpty(_env: &mut Environment, r: CGRect) -> bool {
+    r.size.width == 0.0 || r.size.height == 0.0 || r.size.width.is_nan() || r.size.height.is_nan()
+}
 fn CGRectUnion(_env: &mut Environment, r1: CGRect, r2: CGRect) -> CGRect {
     if r1 == CGRectNull {
         return r2;
@@ -448,6 +451,7 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(CGRectIntersectsRect(_, _)),
     export_c_func!(CGRectIntersection(_, _)),
     export_c_func!(CGRectUnion(_, _)),
+    export_c_func!(CGRectIsEmpty(_)),
     export_c_func!(CGRectGetMinX(_)),
     export_c_func!(CGRectGetMidX(_)),
     export_c_func!(CGRectGetMaxX(_)),

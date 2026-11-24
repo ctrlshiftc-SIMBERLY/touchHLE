@@ -512,9 +512,19 @@ pub const CLASSES: ClassExports = objc_classes! {
 // TODO
 
 - (id)valueForKey:(id)key { // NSString*
-    let key_str = to_rust_string(env, key);
-    // TODO: strip '@' and call super
-    assert!(!key_str.starts_with('@'));
+    if key == nil {
+        log!("Warning: [NSDictionary valueForKey:nil], returning nil");
+        return nil;
+    }
+    let string_class: Class = msg_class![env; NSString class];
+    if msg![env; key isKindOfClass:string_class] {
+        let key_str = to_rust_string(env, key);
+        if let Some(stripped) = key_str.strip_prefix('@') {
+            log!("TODO: [NSDictionary valueForKey:{:?}], using objectForKey:", key_str);
+            let stripped = from_rust_string(env, stripped.to_string());
+            return msg![env; this objectForKey:stripped];
+        }
+    }
     msg![env; this objectForKey:key]
 }
 
