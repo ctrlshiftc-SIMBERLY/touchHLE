@@ -38,6 +38,7 @@ mod font;
 mod frameworks;
 mod fs;
 mod game_hacks;
+mod game_hacks_hidden;
 mod gdb;
 mod gles;
 mod image;

@@ -203,6 +203,82 @@ fn bt_change_gems(env: &mut Environment, this: id, _cmd: SEL, _amount: i32) -> b
     true
 }
 
+static ORIG_IS_ACTIVE: AtomicU32 = AtomicU32::new(0);
+static ORIG_DRESSES_SORTED: AtomicU32 = AtomicU32::new(0);
+
+/// Replacement for `-[StoreItemData isActive]`: items whose artwork is
+/// missing (and the buyable clerks) are treated as no longer on sale, so they
+/// don't show up in the shop.
+fn bt_store_item_is_active(env: &mut Environment, this: id, cmd: SEL) -> bool {
+    let asset_id: id = msg![env; this getAssetId];
+    if asset_id != nil {
+        let name = crate::frameworks::foundation::ns_string::to_rust_string(env, asset_id);
+        if crate::game_hacks_hidden::HIDDEN_STORE_ASSETS.contains(&&*name) {
+            return false;
+        }
+    }
+    let r: u32 = orig(&ORIG_IS_ACTIVE).call_from_host(env, (this, cmd));
+    (r & 0xff) != 0
+}
+
+/// Replacement for `-[DressDatabase sorted]`: leaves out dresses whose
+/// artwork or supplies are missing, so they're not in the sewing list.
+fn bt_dresses_sorted(env: &mut Environment, this: id, cmd: SEL) -> id {
+    let all: id = orig(&ORIG_DRESSES_SORTED).call_from_host(env, (this, cmd));
+    if all == nil {
+        return nil;
+    }
+    let res: id = msg_class![env; NSMutableArray array];
+    let count: u32 = msg![env; all count];
+    for i in 0..count {
+        let dress: id = msg![env; all objectAtIndex:i];
+        let dress_id: id = msg![env; dress Id];
+        let hidden = dress_id != nil && {
+            let name = crate::frameworks::foundation::ns_string::to_rust_string(env, dress_id);
+            crate::game_hacks_hidden::HIDDEN_DRESSES.contains(&&*name)
+        };
+        if !hidden {
+            () = msg![env; res addObject:dress];
+        }
+    }
+    res
+}
+
+static ORIG_INGREDIENTS_GET_DATA: AtomicU32 = AtomicU32::new(0);
+
+/// Replacement for `-[IngredientDatabase getData]` (the supplies shop list):
+/// leaves out supplies whose artwork is missing.
+fn bt_ingredients_get_data(env: &mut Environment, this: id, cmd: SEL) -> id {
+    let all: id = orig(&ORIG_INGREDIENTS_GET_DATA).call_from_host(env, (this, cmd));
+    let array_class: crate::objc::Class = msg_class![env; NSArray class];
+    if all == nil || !msg![env; all isKindOfClass:array_class] {
+        return all;
+    }
+    let res: id = msg_class![env; NSMutableArray array];
+    let count: u32 = msg![env; all count];
+    for i in 0..count {
+        let item: id = msg![env; all objectAtIndex:i];
+        let item_id: id = msg![env; item ID];
+        let hidden = item_id != nil && {
+            let name = crate::frameworks::foundation::ns_string::to_rust_string(env, item_id);
+            crate::game_hacks_hidden::HIDDEN_INGREDIENTS.contains(&&*name)
+        };
+        if !hidden {
+            () = msg![env; res addObject:item];
+        }
+    }
+    res
+}
+
+/// Replacements for `-[ClerkData skin]`/`outfit`: the buyable clerks' looks
+/// were downloaded content, so any hired clerk uses the default clerk's look.
+fn bt_clerk_skin(env: &mut Environment, _this: id, _cmd: SEL) -> id {
+    crate::frameworks::foundation::ns_string::get_static_str(env, "NPC_German")
+}
+fn bt_clerk_outfit(env: &mut Environment, _this: id, _cmd: SEL) -> id {
+    crate::frameworks::foundation::ns_string::get_static_str(env, "C_Clerk")
+}
+
 fn bt_skip_tutorial(_env: &mut Environment, _this: id, _cmd: SEL, _t: id) {}
 
 pub fn apply(env: &mut Environment) {
@@ -250,6 +326,42 @@ pub fn apply(env: &mut Environment) {
         "PlayerData",
         "changeSecondaryCurrency:",
         &(bt_change_gems as fn(&mut Environment, id, SEL, i32) -> bool),
+    );
+    if save_orig(env, "StoreItemData", "isActive", &ORIG_IS_ACTIVE) {
+        override_method(
+            env,
+            "StoreItemData",
+            "isActive",
+            &(bt_store_item_is_active as fn(&mut Environment, id, SEL) -> bool),
+        );
+    }
+    if save_orig(env, "DressDatabase", "sorted", &ORIG_DRESSES_SORTED) {
+        override_method(
+            env,
+            "DressDatabase",
+            "sorted",
+            &(bt_dresses_sorted as fn(&mut Environment, id, SEL) -> id),
+        );
+    }
+    if save_orig(env, "IngredientDatabase", "getData", &ORIG_INGREDIENTS_GET_DATA) {
+        override_method(
+            env,
+            "IngredientDatabase",
+            "getData",
+            &(bt_ingredients_get_data as fn(&mut Environment, id, SEL) -> id),
+        );
+    }
+    override_method(
+        env,
+        "ClerkData",
+        "skin",
+        &(bt_clerk_skin as fn(&mut Environment, id, SEL) -> id),
+    );
+    override_method(
+        env,
+        "ClerkData",
+        "outfit",
+        &(bt_clerk_outfit as fn(&mut Environment, id, SEL) -> id),
     );
     override_method(
         env,
