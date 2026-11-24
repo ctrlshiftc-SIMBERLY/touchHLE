@@ -593,6 +593,20 @@ impl Dyld {
                 continue;
             }
 
+            if crate::objc::tolerant_mode()
+                && !symbol.starts_with("_OBJC_")
+                && !symbol.starts_with("__OBJC_")
+            {
+                // Most missing constants are NSString keys or notification
+                // names, so give them a string with their own name.
+                let name: &'static str =
+                    Box::leak(symbol.trim_start_matches('_').to_string().into_boxed_str());
+                log!("TOLERATED: missing constant {}, using a string", symbol);
+                let template: &'static HostConstant =
+                    Box::leak(Box::new(HostConstant::NSString(name)));
+                self.constants_to_link_later.push((ptr_ptr, template));
+                continue;
+            }
             log!(
                 "Warning: unhandled non-lazy symbol {:?} at {:?} in \"{}\"",
                 symbol,
@@ -760,7 +774,28 @@ impl Dyld {
             return None;
         }
 
-        if let Some(&(symbol, f)) = search_host_dylibs(|dylib| dylib.function_exports, symbol) {
+        let tolerated = if crate::objc::tolerant_mode()
+            && search_host_dylibs(|dylib| dylib.function_exports, symbol).is_none()
+            && !bins.iter().any(|d| d.exported_symbols.contains_key(symbol))
+        {
+            log!(
+                "TOLERATED: unimplemented function {}, it will return 0",
+                symbol
+            );
+            fn tolerated_unimplemented_function(_env: &mut Environment) -> u32 {
+                0
+            }
+            let symbol: &'static str = Box::leak(symbol.to_string().into_boxed_str());
+            let f: HostFunction =
+                &(tolerated_unimplemented_function as fn(&mut Environment) -> u32);
+            Some((symbol, f))
+        } else {
+            None
+        };
+
+        if let Some((symbol, f)) = tolerated.or_else(|| {
+            search_host_dylibs(|dylib| dylib.function_exports, symbol).map(|&(s, f)| (s, f))
+        }) {
             // Allocate an SVC ID for this host function
             let idx: u32 = self.linked_host_functions.len().try_into().unwrap();
             let mut svc = idx + Self::SVC_LINKED_FUNCTIONS_BASE;

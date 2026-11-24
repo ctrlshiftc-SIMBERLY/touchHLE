@@ -109,7 +109,16 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 // NSString
 - (id)systemVersion {
-    ns_string::get_static_str(env, "2.0")
+    // Apps built for iOS 4+ often check the version before using features
+    // touchHLE does support (e.g. CADisplayLink), so report the app's own
+    // minimum version when it's newer than 2.0.
+    match env.bundle.minimum_os_version() {
+        Some(v) if v.split('.').next().and_then(|m| m.parse::<u32>().ok()).unwrap_or(0) >= 3 => {
+            let v = v.to_string();
+            ns_string::from_rust_string(env, v)
+        }
+        _ => ns_string::get_static_str(env, "2.0"),
+    }
 }
 
 - (id)uniqueIdentifier {

@@ -85,6 +85,10 @@ pub const CLASSES: ClassExports = objc_classes! {
     ns_string::get_static_str(env, "GMT")
 }
 
+- (NSInteger)secondsFromGMTForDate:(id)_date {
+    msg![env; this secondsFromGMT]
+}
+
 - (NSInteger)secondsFromGMT {
     // TODO: respect timezone
     0

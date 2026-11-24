@@ -35,7 +35,11 @@ pub(super) struct ThreadInitializer {
 }
 
 fn maybe_initialize_class(env: &mut Environment, receiver: id) {
-    let class_host_object = env.objc.get_host_object(receiver).unwrap();
+    let Some(class_host_object) = env.objc.get_host_object(receiver) else {
+        // An object allocated by the guest without going through +alloc,
+        // e.g. a block literal. Not a class, so nothing to initialize.
+        return;
+    };
     let Some(&super::ClassHostObject {
         superclass,
         is_metaclass,
@@ -184,6 +188,19 @@ fn objc_msgSend_inner(
     );
     let message_type_info = env.objc.message_type_info.take();
 
+    if let Some(filters) = trace_filters() {
+        let sel_str = selector.as_str(&env.mem);
+        if filters.iter().any(|f| sel_str.contains(f.as_str())) {
+            let cls = if receiver == nil {
+                "nil".to_string()
+            } else {
+                let c = ObjC::read_isa(receiver, &env.mem);
+                env.objc.try_get_class_name(c).unwrap_or("?").to_string()
+            };
+            log!("TRACE: [{} {}] receiver={:?}", cls, sel_str, receiver);
+        }
+    }
+
     if receiver == nil {
         // https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjectiveC/Chapters/ocObjectsClasses.html#//apple_ref/doc/uid/TP30001163-CH11-SW7
         log_dbg!("[nil {}]", selector.as_str(&env.mem));
@@ -211,6 +228,16 @@ fn objc_msgSend_inner(
                 ..
             } = class_host_object.as_any().downcast_ref().unwrap();
 
+            if tolerant_mode() {
+                log!(
+                    "TOLERATED: {}class \"{}\" does not respond to selector \"{}\", returning 0",
+                    if is_metaclass { "meta" } else { "" },
+                    name,
+                    selector.as_str(&env.mem),
+                );
+                env.cpu.regs_mut()[0..2].fill(0);
+                return;
+            }
             panic!(
                 "{} {:?} ({}class \"{}\", {:?}){} does not respond to selector \"{}\"!",
                 if is_metaclass { "Class" } else { "Object" },
@@ -289,6 +316,16 @@ Type mismatch when sending message {} to {:?}!
             is_metaclass,
         }) = host_object.as_any().downcast_ref()
         {
+            if tolerant_mode() {
+                log!(
+                    "TOLERATED: unimplemented class \"{}\" {} method \"{}\", returning 0",
+                    name,
+                    if is_metaclass { "class" } else { "instance" },
+                    selector.as_str(&env.mem),
+                );
+                env.cpu.regs_mut()[0..2].fill(0);
+                return;
+            }
             panic!(
                 "Class \"{}\" ({:?}) is unimplemented. Call to {} method \"{}\".",
                 name,
@@ -402,6 +439,19 @@ unsafe impl SafeRead for objc_super {}
 /// extra parameter, because that would take one of the argument slots reserved
 /// for arguments passed onto the method implementation. Hence the [objc_super]
 /// pointer in place of the normal [id].
+#[allow(non_snake_case)]
+pub(super) fn objc_msgSendSuper2_stret(
+    env: &mut Environment,
+    _stret: MutVoidPtr,
+    super_ptr: ConstPtr<objc_super>,
+    selector: SEL,
+) {
+    let objc_super { receiver, class } = env.mem.read(super_ptr);
+    // Rewrite second argument (after the struct return pointer).
+    crate::abi::write_next_arg(&mut 1, env.cpu.regs_mut(), &mut env.mem, receiver);
+    objc_msgSend_inner(env, receiver, selector, Some(class), false, false)
+}
+
 #[allow(non_snake_case)]
 pub(super) fn objc_msgSendSuper2(
     env: &mut Environment,
@@ -667,4 +717,29 @@ pub fn autorelease(env: &mut Environment, object: id) -> id {
         return nil;
     }
     msg![env; object autorelease]
+}
+
+/// Hack for running apps with lots of missing functionality: in tolerant
+/// mode, unknown messages are logged and treated as if sent to nil, rather
+/// than panicking. Enabled for specific apps, or with the
+/// `TOUCHHLE_TOLERANT` environment variable.
+static TOLERANT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn tolerant_mode() -> bool {
+    TOLERANT.load(std::sync::atomic::Ordering::Relaxed)
+        || std::env::var_os("TOUCHHLE_TOLERANT").is_some()
+}
+
+pub fn set_tolerant_mode(enabled: bool) {
+    TOLERANT.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn trace_filters() -> Option<&'static Vec<String>> {
+    static F: std::sync::OnceLock<Option<Vec<String>>> = std::sync::OnceLock::new();
+    F.get_or_init(|| {
+        std::env::var("TOUCHHLE_TRACE_SEL")
+            .ok()
+            .map(|v| v.split(',').map(|s| s.to_string()).collect())
+    })
+    .as_ref()
 }

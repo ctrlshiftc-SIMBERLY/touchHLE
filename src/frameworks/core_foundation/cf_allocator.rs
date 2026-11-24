@@ -59,3 +59,44 @@ pub const CONSTANTS: ConstantExports = &[
         }),
     ),
 ];
+
+fn CFAllocatorAllocate(
+    env: &mut crate::Environment,
+    _allocator: CFAllocatorRef,
+    size: crate::frameworks::core_foundation::CFIndex,
+    _hint: u32,
+) -> crate::mem::MutVoidPtr {
+    if size <= 0 {
+        return Ptr::null();
+    }
+    env.mem.alloc(size as u32)
+}
+
+fn CFAllocatorReallocate(
+    env: &mut crate::Environment,
+    _allocator: CFAllocatorRef,
+    ptr: crate::mem::MutVoidPtr,
+    size: crate::frameworks::core_foundation::CFIndex,
+    _hint: u32,
+) -> crate::mem::MutVoidPtr {
+    if ptr.is_null() {
+        return env.mem.alloc(size.max(1) as u32);
+    }
+    env.mem.realloc(ptr, size.max(1) as u32)
+}
+
+fn CFAllocatorDeallocate(
+    env: &mut crate::Environment,
+    _allocator: CFAllocatorRef,
+    ptr: crate::mem::MutVoidPtr,
+) {
+    if !ptr.is_null() {
+        env.mem.free(ptr);
+    }
+}
+
+pub const FUNCTIONS: crate::dyld::FunctionExports = &[
+    crate::dyld::export_c_func!(CFAllocatorAllocate(_, _, _)),
+    crate::dyld::export_c_func!(CFAllocatorReallocate(_, _, _, _)),
+    crate::dyld::export_c_func!(CFAllocatorDeallocate(_, _)),
+];

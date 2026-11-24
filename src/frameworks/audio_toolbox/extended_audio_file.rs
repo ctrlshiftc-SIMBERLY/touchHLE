@@ -111,6 +111,50 @@ fn ExtAudioFileGetProperty(
 ) -> OSStatus {
     return_if_null!(in_ext_audio_file);
 
+    if in_property_id == u32::from_be_bytes(*b"#frm") {
+        // kExtAudioFileProperty_FileLengthFrames (SInt64)
+        let guest_audio_file = env
+            .framework_state
+            .audio_toolbox
+            .extended_audio_file
+            .extended_audio_files
+            .get(&in_ext_audio_file)
+            .unwrap()
+            .guest_audio_file;
+        let size_ptr: MutPtr<u32> = env.mem.alloc_and_write(0u32);
+        let buf: MutVoidPtr = env.mem.alloc(64);
+        // Data format, for frames per packet.
+        env.mem
+            .write(size_ptr, guest_size_of::<AudioStreamBasicDescription>());
+        let r1 = AudioFileGetProperty(
+            env,
+            guest_audio_file,
+            kAudioFilePropertyDataFormat,
+            size_ptr,
+            buf,
+        );
+        let frames_per_packet: u32 = env.mem.read((buf.cast::<u32>() + 5).cast_const());
+        // Packet count.
+        env.mem.write(size_ptr, 8);
+        let r2 = AudioFileGetProperty(
+            env,
+            guest_audio_file,
+            u32::from_be_bytes(*b"pcnt"),
+            size_ptr,
+            buf,
+        );
+        let packets: u64 = env.mem.read(buf.cast::<u64>().cast_const());
+        env.mem.free(buf);
+        env.mem.free(size_ptr.cast());
+        if r1 != 0 || r2 != 0 {
+            return if r1 != 0 { r1 } else { r2 };
+        }
+        let frames = (packets * frames_per_packet.max(1) as u64) as i64;
+        env.mem.write(out_property_data.cast::<i64>(), frames);
+        env.mem.write(io_property_data_size, 8);
+        return 0;
+    }
+
     let audio_file_property_id = match in_property_id {
         kExtAudioFileProperty_FileDataFormat => kAudioFilePropertyDataFormat,
         _ => unimplemented!(

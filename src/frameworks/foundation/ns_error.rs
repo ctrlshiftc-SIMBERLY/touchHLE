@@ -64,6 +64,10 @@ pub const CLASSES: ClassExports = objc_classes! {
     this
 }
 
+- (id)description {
+    msg![env; this localizedDescription]
+}
+
 - (id)localizedDescription {
     let user_info =  env.objc.borrow::<ErrorHostObject>(this).user_info;
     let key = ns_string::get_static_str(env, NSLocalizedDescriptionKey);

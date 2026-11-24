@@ -16,7 +16,7 @@ use crate::frameworks::core_foundation::cf_number::{
 use crate::frameworks::core_graphics::{CGPoint, CGRect, CGSize};
 use crate::frameworks::foundation::ns_keyed_archiver::get_value_to_encode_for_current_key;
 use crate::frameworks::foundation::NSInteger;
-use crate::mem::{ConstVoidPtr, MutVoidPtr};
+use crate::mem::{ConstPtr, ConstVoidPtr, MutVoidPtr};
 use crate::objc::{
     autorelease, id, msg, msg_class, nil, objc_classes, release, retain, Class, ClassExports,
     HostObject, NSZonePtr,
@@ -29,8 +29,85 @@ pub(super) enum NSValueHostObject {
     CGPoint(CGPoint),
     CGSize(CGSize),
     CGRect(CGRect),
+    /// Generic value from `valueWithBytes:objCType:`.
+    Bytes(Vec<u8>),
 }
 impl HostObject for NSValueHostObject {}
+
+/// Computes (size, alignment) of an Objective-C type encoding, for the
+/// simple cases used with NSValue. Returns the remaining unparsed string.
+fn objc_type_size(enc: &[u8]) -> (u32, u32, &[u8]) {
+    let mut enc = enc;
+    // skip type qualifiers
+    while let Some(&c) = enc.first() {
+        if b"rnNoORV".contains(&c) {
+            enc = &enc[1..];
+        } else {
+            break;
+        }
+    }
+    let Some(&c) = enc.first() else {
+        return (0, 1, enc);
+    };
+    let rest = &enc[1..];
+    match c {
+        b'c' | b'C' | b'B' => (1, 1, rest),
+        b's' | b'S' => (2, 2, rest),
+        b'i' | b'I' | b'l' | b'L' | b'f' | b'*' | b'@' | b'#' | b':' => (4, 4, rest),
+        b'q' | b'Q' | b'd' => (8, 4, rest),
+        b'^' => {
+            let (_, _, rest) = objc_type_size(rest);
+            (4, 4, rest)
+        }
+        b'{' | b'(' => {
+            let close = if c == b'{' { b'}' } else { b')' };
+            // skip name
+            let mut r = rest;
+            while let Some(&ch) = r.first() {
+                if ch == b'=' {
+                    r = &r[1..];
+                    break;
+                }
+                if ch == close {
+                    break;
+                }
+                r = &r[1..];
+            }
+            let (mut size, mut align) = (0u32, 1u32);
+            while let Some(&ch) = r.first() {
+                if ch == close {
+                    r = &r[1..];
+                    break;
+                }
+                let (s, a, rr) = objc_type_size(r);
+                if rr.len() == r.len() {
+                    break;
+                }
+                r = rr;
+                align = align.max(a);
+                if c == b'{' {
+                    size = size.div_ceil(a) * a + s;
+                } else {
+                    size = size.max(s);
+                }
+            }
+            (size.div_ceil(align) * align, align, r)
+        }
+        b'[' => {
+            let digits = rest.iter().take_while(|c| c.is_ascii_digit()).count();
+            let n: u32 = std::str::from_utf8(&rest[..digits])
+                .unwrap()
+                .parse()
+                .unwrap_or(0);
+            let (s, a, mut r) = objc_type_size(&rest[digits..]);
+            if r.first() == Some(&b']') {
+                r = &r[1..];
+            }
+            (n * s, a, r)
+        }
+        _ => (4, 4, rest),
+    }
+}
 
 macro_rules! impl_AsValue {
     ($method_name:tt, $typ:tt) => {
@@ -113,6 +190,19 @@ pub const CLASSES: ClassExports = objc_classes! {
     msg_class![env; NSNumber numberWithUnsignedInt:(ptr.to_bits())]
 }
 
++ (id)valueWithBytes:(ConstVoidPtr)value objCType:(ConstPtr<u8>)type_ {
+    let enc = env.mem.cstr_at(type_).to_vec();
+    let (size, _, _) = objc_type_size(&enc);
+    let bytes = env.mem.bytes_at(value.cast(), size).to_vec();
+    let host_object = Box::new(NSValueHostObject::Bytes(bytes));
+    let new = env.objc.alloc_object(this, host_object, &mut env.mem);
+    autorelease(env, new)
+}
+
++ (id)value:(ConstVoidPtr)value withObjCType:(ConstPtr<u8>)type_ {
+    msg![env; this valueWithBytes:value objCType:type_]
+}
+
 + (id)valueWithCGPoint:(CGPoint)value {
     let host_object = Box::new(NSValueHostObject::CGPoint(value));
     let new = env.objc.alloc_object(this, host_object, &mut env.mem);
@@ -129,6 +219,24 @@ pub const CLASSES: ClassExports = objc_classes! {
     let host_object = Box::new(NSValueHostObject::CGRect(value));
     let new = env.objc.alloc_object(this, host_object, &mut env.mem);
     autorelease(env, new)
+}
+
+- (())getValue:(MutVoidPtr)buffer {
+    let bytes: Vec<u8> = match env.objc.borrow::<NSValueHostObject>(this) {
+        NSValueHostObject::Bytes(b) => b.clone(),
+        NSValueHostObject::CGPoint(p) => [p.x.to_le_bytes(), p.y.to_le_bytes()].concat(),
+        NSValueHostObject::CGSize(p) => [p.width.to_le_bytes(), p.height.to_le_bytes()].concat(),
+        NSValueHostObject::CGRect(r) => [
+            r.origin.x.to_le_bytes(),
+            r.origin.y.to_le_bytes(),
+            r.size.width.to_le_bytes(),
+            r.size.height.to_le_bytes(),
+        ]
+        .concat(),
+    };
+    env.mem
+        .bytes_at_mut(buffer.cast(), bytes.len() as u32)
+        .copy_from_slice(&bytes);
 }
 
 - (CGPoint)CGPointValue {
@@ -275,6 +383,18 @@ pub const CLASSES: ClassExports = objc_classes! {
     autorelease(env, new)
 }
 
++ (id)numberWithUnsignedLong:(u32)value {
+    let new: id = msg![env; this alloc];
+    let new: id = msg![env; new initWithUnsignedInt:value];
+    autorelease(env, new)
+}
+
++ (id)numberWithUnsignedChar:(u8)value {
+    let new: id = msg![env; this alloc];
+    let new: id = msg![env; new initWithUnsignedShort:(value as u16)];
+    autorelease(env, new)
+}
+
 + (id)numberWithChar:(i8)value {
     // TODO: for greater efficiency we could return a static-lifetime value
 
@@ -373,6 +493,14 @@ pub const CLASSES: ClassExports = objc_classes! {
     this
 }
 
+- (id)initWithUnsignedLong:(u32)value {
+    msg![env; this initWithUnsignedInt:value]
+}
+
+- (id)initWithUnsignedChar:(u8)value {
+    msg![env; this initWithUnsignedShort:(value as u16)]
+}
+
 - (id)initWithChar:(i8)value {
     *env.objc.borrow_mut(this) = NSNumberHostObject::Char(value);
     this
@@ -424,6 +552,14 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (u16)unsignedShortValue {
     env.objc.borrow::<NSNumberHostObject>(this).as_unsigned_short()
+}
+
+- (u32)unsignedLongValue {
+    env.objc.borrow::<NSNumberHostObject>(this).as_unsigned_int()
+}
+
+- (u8)unsignedCharValue {
+    env.objc.borrow::<NSNumberHostObject>(this).as_unsigned_int() as u8
 }
 
 - (i8)charValue {

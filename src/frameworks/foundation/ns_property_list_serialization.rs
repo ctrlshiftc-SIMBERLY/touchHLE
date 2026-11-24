@@ -55,6 +55,22 @@ pub const CLASSES: ClassExports = objc_classes! {
     msg_class![env; NSData dataWithBytesNoCopy:ptr length:len]
 }
 
++ (id)propertyListWithData:(id)data
+                   options:(NSPropertyListMutabilityOptions)opt
+                    format:(MutPtr<NSPropertyListFormat>)format
+                     error:(MutPtr<id>)error {
+    if !error.is_null() {
+        env.mem.write(error, nil);
+    }
+    if data == nil {
+        return nil;
+    }
+    msg![env; this propertyListFromData:data
+                       mutabilityOption:opt
+                                 format:format
+                       errorDescription:(MutPtr::<id>::null())]
+}
+
 + (id)propertyListFromData:(id)data // NSData *
           mutabilityOption:(NSPropertyListMutabilityOptions)opt
                     format:(MutPtr<NSPropertyListFormat>)format

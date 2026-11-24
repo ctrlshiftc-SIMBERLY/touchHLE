@@ -467,7 +467,28 @@ fn substitute_classes(
         || name.starts_with("Flurry")
         || name.starts_with("Mobclix")
         || name.starts_with("OpenFeint")
-        || name.starts_with("Tapjoy"))
+        || name.starts_with("Tapjoy")
+        // Extra third-party networking/ad/analytics SDKs, for apps that are
+        // meant to be played offline.
+        || name.starts_with("TJ") // Tapjoy
+        || name.starts_with("ASI") // ASIHTTPRequest
+        || name.starts_with("ADC") // AdColony
+        || name.starts_with("AdColony")
+        || name.starts_with("PH") // PlayHaven
+        || name.starts_with("PLCrash") // PLCrashReporter
+        || name.starts_with("PG") // PhoneGap (bundled by ad SDKs)
+        || name.starts_with("MRAID")
+        || name.starts_with("SDURLCache")
+        || name.starts_with("SDCachedURLResponse")
+        || name.starts_with("IAdLink")
+        || name.starts_with("BWQuincy") // QuincyKit crash reporter
+        || name.starts_with("BWHockey")
+        || name.starts_with("BTAnalytics")
+        || name == "Tracking")
+        // Bundled JSON libraries (e.g. JSONKit as ADCJK*/TJJK*) have C
+        // initializers that poke at their classes, so keep them real.
+        || name.contains("JK")
+        || name.contains("JSONDecoder")
     {
         return None;
     }

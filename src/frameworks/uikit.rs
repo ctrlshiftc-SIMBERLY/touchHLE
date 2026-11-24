@@ -20,6 +20,7 @@ pub mod ui_device;
 pub mod ui_event;
 pub mod ui_font;
 pub mod ui_geometry;
+pub mod ui_gesture_recognizer;
 pub mod ui_graphics;
 pub mod ui_image;
 pub mod ui_image_picker_controller;
@@ -43,6 +44,7 @@ pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         ui_device::CLASSES,
         ui_event::CLASSES,
         ui_font::CLASSES,
+        ui_gesture_recognizer::CLASSES,
         ui_image::CLASSES,
         ui_image_picker_controller::CLASSES,
         ui_local_notification::CLASSES,
@@ -90,6 +92,7 @@ pub struct State {
     ui_color: ui_color::State,
     ui_device: ui_device::State,
     ui_font: ui_font::State,
+    pub ui_gesture_recognizer: ui_gesture_recognizer::State,
     ui_graphics: ui_graphics::State,
     ui_image: ui_image::State,
     ui_screen: ui_screen::State,
@@ -103,6 +106,7 @@ pub struct State {
 /// Returns the next time this function must be called, if any, e.g. the next
 /// time an accelerometer input is due.
 pub fn handle_events(env: &mut Environment) -> Option<Instant> {
+    ui_gesture_recognizer::poll(env);
     use crate::window::Event;
     use crate::window::TextInputEvent;
 

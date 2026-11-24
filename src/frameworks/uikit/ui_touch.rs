@@ -44,6 +44,53 @@ pub(super) struct UITouchHostObject {
 }
 impl HostObject for UITouchHostObject {}
 
+/// Some apps (e.g. cocos2d games) lay out a landscape-sized view in a
+/// portrait window without a rotation transform, relying on the OS to rotate
+/// touches. touchHLE rotates the whole window instead, so touch points arrive
+/// in portrait space. Detect that case and rotate the point into the view.
+pub fn fix_unrotated_landscape_point(
+    env: &mut Environment,
+    window: id,
+    view: id,
+    point_in_window: CGPoint,
+    converted: CGPoint,
+) -> CGPoint {
+    if window == nil || view == nil {
+        return converted;
+    }
+    let wb: crate::frameworks::core_graphics::CGRect = msg![env; window bounds];
+    let vb: crate::frameworks::core_graphics::CGRect = msg![env; view bounds];
+    if std::env::var_os("TOUCHHLE_GESTURE_DEBUG").is_some() {
+        log!(
+            "fix_landscape: window {:?} view {:?} p {:?} conv {:?} rot {:?}",
+            wb,
+            vb,
+            point_in_window,
+            converted,
+            env.window.as_ref().map(|w| w.current_rotation())
+        );
+    }
+    let window_portrait = wb.size.height > wb.size.width;
+    let view_landscape = vb.size.width > vb.size.height;
+    let untransformed = (converted.x - point_in_window.x).abs() < 0.01
+        && (converted.y - point_in_window.y).abs() < 0.01;
+    if !(window_portrait && view_landscape && untransformed) {
+        return converted;
+    }
+    use crate::window::DeviceOrientation;
+    match env.window.as_ref().map(|w| w.current_rotation()) {
+        Some(DeviceOrientation::LandscapeLeft) => CGPoint {
+            x: point_in_window.y,
+            y: wb.size.width - point_in_window.x,
+        },
+        Some(DeviceOrientation::LandscapeRight) => CGPoint {
+            x: wb.size.height - point_in_window.y,
+            y: point_in_window.x,
+        },
+        _ => converted,
+    }
+}
+
 pub const CLASSES: ClassExports = objc_classes! {
 
 (env, this, _cmd);
@@ -75,7 +122,8 @@ pub const CLASSES: ClassExports = objc_classes! {
     if that_view == nil {
         location_in_window
     } else {
-        msg![env; that_view convertPoint:location_in_window fromView:window]
+        let p: CGPoint = msg![env; that_view convertPoint:location_in_window fromView:window];
+        fix_unrotated_landscape_point(env, window, that_view, location_in_window, p)
     }
 }
 - (CGPoint)previousLocationInView:(id)that_view { // UIView*
@@ -86,6 +134,10 @@ pub const CLASSES: ClassExports = objc_classes! {
     } else {
         msg![env; that_view convertPoint:location_in_window fromView:window]
     }
+}
+
+- (id)window {
+    env.objc.borrow::<UITouchHostObject>(this).window
 }
 
 - (id)view {
@@ -309,6 +361,7 @@ fn handle_touches_down(env: &mut Environment, map: HashMap<FingerId, Coords>) {
             touches,
             event
         );
+        super::ui_gesture_recognizer::touches_began(env, view, touches);
         let _: () = msg![env; view touchesBegan:touches withEvent:event];
     }
 
@@ -395,6 +448,7 @@ fn handle_touches_move(env: &mut Environment, map: HashMap<FingerId, Coords>) {
             touches,
             event
         );
+        super::ui_gesture_recognizer::touches_moved(env, view, touches);
         let _: () = msg![env; view touchesMoved:touches withEvent:event];
     }
 
@@ -486,6 +540,7 @@ fn handle_touches_up(env: &mut Environment, map: HashMap<FingerId, Coords>) {
             touches,
             event
         );
+        super::ui_gesture_recognizer::touches_ended(env, view, touches);
         let _: () = msg![env; view touchesEnded:touches withEvent:event];
     }
 

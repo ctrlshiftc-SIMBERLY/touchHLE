@@ -847,6 +847,23 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 // Co-ordinate space conversion
 
+- (())addGestureRecognizer:(id)gr {
+    super::ui_gesture_recognizer::add_to_view(env, this, gr);
+}
+
+- (())removeGestureRecognizer:(id)gr {
+    super::ui_gesture_recognizer::remove_from_view(env, this, gr);
+}
+
+- (id)gestureRecognizers {
+    let list = super::ui_gesture_recognizer::recognizers_of_view(env, this);
+    let arr: id = msg_class![env; NSMutableArray array];
+    for gr in list {
+        () = msg![env; arr addObject:gr];
+    }
+    arr
+}
+
 - (CGPoint)convertPoint:(CGPoint)point
                fromView:(id)other { // UIView*
     if other == nil {

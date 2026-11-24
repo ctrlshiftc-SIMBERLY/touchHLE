@@ -719,6 +719,13 @@ fn funlockfile(env: &mut Environment, file_ptr: MutPtr<FILE>) {
 }
 
 pub const CONSTANTS: ConstantExports = &[
+    // Stack protector canary, used by apps built with -fstack-protector.
+    (
+        "___stack_chk_guard",
+        HostConstant::Custom(|env| -> ConstVoidPtr {
+            env.mem.alloc_and_write(0x3f2e1d0c_u32).cast().cast_const()
+        }),
+    ),
     (
         "___stdinp",
         HostConstant::Custom(|env| -> ConstVoidPtr {
@@ -745,7 +752,12 @@ pub const CONSTANTS: ConstantExports = &[
     ),
 ];
 
+fn __stack_chk_fail(_env: &mut Environment) {
+    panic!("__stack_chk_fail(): app detected stack corruption");
+}
+
 pub const FUNCTIONS: FunctionExports = &[
+    export_c_func!(__stack_chk_fail()),
     // Standard C functions
     export_c_func!(fopen(_, _)),
     export_c_func!(fread(_, _, _, _)),

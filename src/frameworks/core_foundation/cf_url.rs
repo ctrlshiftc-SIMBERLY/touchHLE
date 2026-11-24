@@ -130,7 +130,9 @@ fn CFURLCreateWithString(
     base_url: CFURLRef,
 ) -> CFURLRef {
     assert!(allocator == kCFAllocatorDefault || env.mem.read(allocator).is_system_default()); // unimplemented
-    assert!(base_url.is_null()); // TODO
+    if !base_url.is_null() {
+        log!("TODO: CFURLCreateWithString base URL ignored");
+    }
     let url: id = msg_class![env; NSURL alloc];
     msg![env; url initWithString:url_string]
 }

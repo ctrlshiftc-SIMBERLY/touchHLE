@@ -205,6 +205,21 @@ pub const CLASSES: ClassExports = objc_classes! {
     autorelease(env, res_imm)
 }
 
+- (id)filteredArrayUsingPredicate:(id)predicate {
+    let items = super::ns_predicate::filter(env, this, predicate);
+    for &obj in &items {
+        retain(env, obj);
+    }
+    let res = from_vec(env, items);
+    autorelease(env, res)
+}
+
+- (id)sortedArrayUsingDescriptors:(id)descriptors {
+    let new = msg![env; this mutableCopy];
+    () = msg![env; new sortUsingDescriptors:descriptors];
+    autorelease(env, new)
+}
+
 - (id)sortedArrayUsingFunction:(GuestFunction)comparator
                        context:(MutVoidPtr)context {
     let array = msg![env; this mutableCopy];
@@ -599,6 +614,77 @@ pub const CLASSES: ClassExports = objc_classes! {
         },
     );
     let (env, _) = user_data;
+    env.objc.borrow_mut::<ArrayHostObject>(this).array = array;
+}
+
+- (())filterUsingPredicate:(id)predicate {
+    let keep = super::ns_predicate::filter(env, this, predicate);
+    let count: NSUInteger = msg![env; this count];
+    for i in (0..count).rev() {
+        let obj: id = msg![env; this objectAtIndex:i];
+        if !keep.contains(&obj) {
+            () = msg![env; this removeObjectAtIndex:i];
+        }
+    }
+}
+
+- (())sortUsingDescriptors:(id)descriptors {
+    let n: NSUInteger = msg![env; descriptors count];
+    let descs: Vec<id> = (0..n).map(|i| msg![env; descriptors objectAtIndex:i]).collect();
+    let host_object: &mut ArrayHostObject = env.objc.borrow_mut(this);
+    let mut array = std::mem::take(&mut host_object.array);
+    // Stable merge sort, as the comparisons call back into the guest.
+    let mut idx: Vec<usize> = (0..array.len()).collect();
+    let mut cmp_err = false;
+    {
+        let arr = &array;
+        let env_ref = &mut *env;
+        let mut tmp = idx.clone();
+        fn merge_sort(
+            env: &mut Environment,
+            arr: &[id],
+            descs: &[id],
+            v: &mut [usize],
+            tmp: &mut [usize],
+        ) {
+            let n = v.len();
+            if n <= 1 {
+                return;
+            }
+            let mid = n / 2;
+            merge_sort(env, arr, descs, &mut v[..mid], &mut tmp[..mid]);
+            merge_sort(env, arr, descs, &mut v[mid..], &mut tmp[mid..]);
+            let (mut i, mut j, mut k) = (0, mid, 0);
+            while i < mid && j < n {
+                let r = crate::frameworks::foundation::ns_sort_descriptor::compare_with_descriptors(
+                    env, descs, arr[v[j]], arr[v[i]],
+                );
+                if r < 0 {
+                    tmp[k] = v[j];
+                    j += 1;
+                } else {
+                    tmp[k] = v[i];
+                    i += 1;
+                }
+                k += 1;
+            }
+            while i < mid {
+                tmp[k] = v[i];
+                i += 1;
+                k += 1;
+            }
+            while j < n {
+                tmp[k] = v[j];
+                j += 1;
+                k += 1;
+            }
+            v.copy_from_slice(&tmp[..n]);
+        }
+        merge_sort(env_ref, arr, &descs, &mut idx, &mut tmp);
+        let _ = &mut cmp_err;
+    }
+    let sorted: Vec<id> = idx.iter().map(|&i| array[i]).collect();
+    array = sorted;
     env.objc.borrow_mut::<ArrayHostObject>(this).array = array;
 }
 

@@ -313,6 +313,28 @@ pub fn init_with_objects_and_keys(
 
 /// Helper function to share `initWithDictionary:` implementations
 fn init_with_dictionary_common(env: &mut Environment, this: id, other_dict: id) -> id {
+    if other_dict == nil {
+        *env.objc.borrow_mut(this) = <DictionaryHostObject as Default>::default();
+        return this;
+    }
+    let is_host_dict = env
+        .objc
+        .get_host_object(other_dict)
+        .is_some_and(|h| h.as_any().is::<DictionaryHostObject>());
+    if !is_host_dict {
+        // A dictionary implemented by the guest (e.g. JSONKit's): copy it
+        // through its public interface.
+        let keys: id = msg![env; other_dict allKeys];
+        let count: NSUInteger = msg![env; keys count];
+        let mut host_object = <DictionaryHostObject as Default>::default();
+        for i in 0..count {
+            let key: id = msg![env; keys objectAtIndex:i];
+            let object: id = msg![env; other_dict objectForKey:key];
+            host_object.insert(env, key, object, /* copy_key: */ true);
+        }
+        *env.objc.borrow_mut(this) = host_object;
+        return this;
+    }
     let other_host_object: DictionaryHostObject = std::mem::take(env.objc.borrow_mut(other_dict));
 
     let mut host_object = <DictionaryHostObject as Default>::default();
@@ -430,6 +452,23 @@ pub const CLASSES: ClassExports = objc_classes! {
     let new_dict: id = msg![env; this alloc];
     let new_dict: id = msg![env; new_dict initWithDictionary:dict];
     autorelease(env, new_dict)
+}
+
+- (id)allValues {
+    let keys: id = msg![env; this allKeys];
+    let count: NSUInteger = msg![env; keys count];
+    let values: id = msg_class![env; NSMutableArray array];
+    for i in 0..count {
+        let key: id = msg![env; keys objectAtIndex:i];
+        let value: id = msg![env; this objectForKey:key];
+        () = msg![env; values addObject:value];
+    }
+    values
+}
+
+- (id)keyEnumerator {
+    let keys: id = msg![env; this allKeys];
+    msg![env; keys objectEnumerator]
 }
 
 - (id)init {

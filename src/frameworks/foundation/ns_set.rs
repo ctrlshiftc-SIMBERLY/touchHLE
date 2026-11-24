@@ -120,6 +120,15 @@ pub const CLASSES: ClassExports = objc_classes! {
     todo!(); // TODO: this should produce an immutable copy
 }
 
+
+- (())addObjectsFromArray:(id)array {
+    let count: NSUInteger = msg![env; array count];
+    for i in 0..count {
+        let obj: id = msg![env; array objectAtIndex:i];
+        () = msg![env; this addObject:obj];
+    }
+}
+
 @end
 
 // Our private subclass that is the single implementation of NSSet for the

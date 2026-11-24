@@ -418,6 +418,11 @@ impl Environment {
 
         let mut mem = mem::Mem::new();
 
+        // Apps that need a lot of missing functionality to be tolerated.
+        if bundle.bundle_identifier() == "com.breaktime.fashion" {
+            objc::set_tolerant_mode(true);
+        }
+
         let is_spore = bundle.bundle_identifier().starts_with("com.ea.spore");
         let is_critter_crunch = bundle
             .bundle_identifier()
@@ -696,6 +701,7 @@ impl Environment {
 
         env.set_up_initial_env_vars();
         dyld::Dyld::do_late_linking(&mut env);
+        crate::game_hacks::apply(&mut env);
 
         env.cpu.set_cpsr(cpu::Cpu::CPSR_USER_MODE);
 

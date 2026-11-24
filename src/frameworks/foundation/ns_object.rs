@@ -19,11 +19,76 @@ use super::{NSTimeInterval, NSUInteger};
 use crate::frameworks::foundation::ns_run_loop::{add_perform_request, cancel_perform_requests};
 use crate::frameworks::foundation::ns_thread::detach_new_thread_inner;
 use crate::libc::semaphore::{host_destroy_semaphore, sem_wait};
-use crate::mem::MutVoidPtr;
+use crate::mem::{MutVoidPtr, Ptr};
 use crate::objc::{
     autorelease, id, msg, msg_class, msg_send, msg_send_no_type_checking, nil, objc_classes,
     retain, Class, ClassExports, NSZonePtr, ObjC, TrivialHostObject, SEL,
 };
+use crate::Environment;
+
+/// Implementation of `methodForSelector:` and friends. Guest methods are
+/// returned directly. Host methods have no guest address, so instead the
+/// address of `objc_msgSend` is returned: an IMP is called with the same
+/// arguments as `objc_msgSend` (receiver, selector, ...), so this is
+/// equivalent as long as the receiver's class doesn't override the method.
+fn method_for_selector(env: &mut Environment, class: Class, selector: SEL) -> MutVoidPtr {
+    match env.objc.class_find_guest_imp(class, selector) {
+        Ok(Some(imp)) => Ptr::from_bits(imp.addr_with_thumb_bit()),
+        Ok(None) => Ptr::null(),
+        Err(()) => {
+            log_dbg!(
+                "methodForSelector: {} is a host method, returning objc_msgSend",
+                selector.as_str(&env.mem)
+            );
+            env.dyld
+                .create_function_address(&mut env.mem, &mut env.cpu, "objc_msgSend")
+                .unwrap()
+        }
+    }
+}
+
+/// Checks a guest class's protocol list (read from the app's Objective-C
+/// metadata) for a protocol with the given name, recursively.
+fn guest_class_conforms(env: &mut Environment, class: Class, wanted: &[u8]) -> bool {
+    let words: crate::mem::ConstPtr<u32> = class.cast().cast_const();
+    let data = env.mem.read(words + 4) & !3;
+    if !(0x1000..0x3600_0000).contains(&data) {
+        return false; // not a guest class
+    }
+    let protocols = env
+        .mem
+        .read(crate::mem::ConstPtr::<u32>::from_bits(data + 24));
+    protocol_list_contains(env, protocols, wanted, 0)
+}
+
+fn protocol_list_contains(env: &mut Environment, list: u32, wanted: &[u8], depth: u32) -> bool {
+    if !(0x1000..0x3600_0000).contains(&list) || depth > 8 {
+        return false;
+    }
+    let count = env.mem.read(crate::mem::ConstPtr::<u32>::from_bits(list));
+    for i in 0..count.min(64) {
+        let proto = env
+            .mem
+            .read(crate::mem::ConstPtr::<u32>::from_bits(list + 4 + 4 * i));
+        if !(0x1000..0x3600_0000).contains(&proto) {
+            continue;
+        }
+        let name = env
+            .mem
+            .read(crate::mem::ConstPtr::<u32>::from_bits(proto + 4));
+        if name >= 0x1000 && env.mem.cstr_at(crate::mem::ConstPtr::<u8>::from_bits(name)) == wanted
+        {
+            return true;
+        }
+        let inner = env
+            .mem
+            .read(crate::mem::ConstPtr::<u32>::from_bits(proto + 8));
+        if protocol_list_contains(env, inner, wanted, depth + 1) {
+            return true;
+        }
+    }
+    false
+}
 
 pub const CLASSES: ClassExports = objc_classes! {
 
@@ -60,6 +125,15 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 + (())autorelease {
     // classes are not refcounted
+}
+
++ (MutVoidPtr)methodForSelector:(SEL)selector {
+    let metaclass = ObjC::read_isa(this, &env.mem);
+    method_for_selector(env, metaclass, selector)
+}
+
++ (MutVoidPtr)instanceMethodForSelector:(SEL)selector {
+    method_for_selector(env, this, selector)
 }
 
 + (bool)instancesRespondToSelector:(SEL)selector {
@@ -166,6 +240,106 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 // NSKeyValueCoding
 // https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/KeyValueCoding/SearchImplementation.html
+- (())setValuesForKeysWithDictionary:(id)dict {
+    let keys: id = msg![env; dict allKeys];
+    let count: NSUInteger = msg![env; keys count];
+    for i in 0..count {
+        let key: id = msg![env; keys objectAtIndex:i];
+        let value: id = msg![env; dict objectForKey:key];
+        () = msg![env; this setValue:value forKey:key];
+    }
+}
+
+- (bool)conformsToProtocol:(id)protocol {
+    if protocol == nil {
+        return false;
+    }
+    let wanted: u32 = env.mem.read(protocol.cast::<u32>() + 1);
+    let wanted = env.mem.cstr_at(crate::mem::Ptr::<u8, false>::from_bits(wanted)).to_vec();
+    let mut class: Class = ObjC::read_isa(this, &env.mem);
+    // For a class object, check the class itself, not the metaclass.
+    let class_of_this: Class = msg![env; this class];
+    if class_of_this == this {
+        class = this;
+    }
+    while class != nil {
+        if guest_class_conforms(env, class, &wanted) {
+            return true;
+        }
+        class = env.objc.get_superclass(class);
+    }
+    false
+}
+
+- (id)valueForKey:(id)key { // NSString*
+    let key_string = to_rust_string(env, key);
+    let camel = if key_string.is_empty() {
+        String::new()
+    } else {
+        format!("{}{}", key_string[..1].to_ascii_uppercase(), &key_string[1..])
+    };
+    let class: Class = msg![env; this class];
+    for name in [key_string.to_string(), format!("get{camel}"), format!("is{camel}")] {
+        let Some(sel) = env.objc.lookup_selector(&name) else { continue };
+        if !env.objc.class_has_method(class, sel) {
+            continue;
+        }
+        // Box primitive return values based on the guest method signature.
+        let ret_type = env
+            .objc
+            .class_get_method_signature(class, sel)
+            .copied()
+            .map(|sig| env.mem.cstr_at(sig).first().copied().unwrap_or(b'@'))
+            .unwrap_or(b'@');
+        return match ret_type {
+            b'c' | b'C' | b'B' | b's' | b'S' | b'i' | b'l' => {
+                let v: i32 = msg_send(env, (this, sel));
+                msg_class![env; NSNumber numberWithInt:v]
+            }
+            b'I' | b'L' => {
+                let v: u32 = msg_send(env, (this, sel));
+                msg_class![env; NSNumber numberWithUnsignedInt:v]
+            }
+            b'f' => {
+                let v: f32 = msg_send(env, (this, sel));
+                msg_class![env; NSNumber numberWithFloat:v]
+            }
+            b'd' => {
+                let v: f64 = msg_send(env, (this, sel));
+                msg_class![env; NSNumber numberWithDouble:v]
+            }
+            b'q' => {
+                let v: i64 = msg_send(env, (this, sel));
+                msg_class![env; NSNumber numberWithLongLong:v]
+            }
+            b'Q' => {
+                let v: u64 = msg_send(env, (this, sel));
+                msg_class![env; NSNumber numberWithUnsignedLongLong:v]
+            }
+            _ => msg_send(env, (this, sel)),
+        };
+    }
+    // Fall back to instance variables. We don't track ivar types, so guess:
+    // if the value is a known object, return it, otherwise box it as an int.
+    for name in [format!("_{key_string}"), key_string.to_string(), format!("_is{camel}"), format!("is{camel}")] {
+        if let Some(ivar_ptr) = env.objc.object_lookup_ivar(&env.mem, this, &name) {
+            let raw: u32 = env.mem.read(ivar_ptr);
+            let as_obj: id = crate::mem::Ptr::from_bits(raw);
+            if raw != 0 && env.objc.get_host_object(as_obj).is_some() {
+                return as_obj;
+            }
+            return msg_class![env; NSNumber numberWithInt:(raw as i32)];
+        }
+    }
+    log!(
+        "TODO: valueForKey:{} on {:?} ({}) found no accessor, returning nil",
+        key_string,
+        this,
+        env.objc.get_class_name(class)
+    );
+    nil
+}
+
 - (())setValue:(id)value
        forKey:(id)key { // NSString*
     let key_string = to_rust_string(env, key); // TODO: avoid copy?
@@ -246,6 +420,11 @@ forUndefinedKey:(id)key { // NSString*
 }
 - (())didChangeValueForKey:(id)_key { // NSString *
     log_once!("TODO: NSObject didChangeValueForKey:");
+}
+
+- (MutVoidPtr)methodForSelector:(SEL)selector {
+    let class = ObjC::read_isa(this, &env.mem);
+    method_for_selector(env, class, selector)
 }
 
 - (bool)respondsToSelector:(SEL)selector {

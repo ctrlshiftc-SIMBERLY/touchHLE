@@ -204,6 +204,34 @@ impl ObjC {
         }
     }
 
+    /// Finds the guest implementation of a method in a class chain, if the
+    /// method exists and is implemented by the guest. Returns `Err(())` if the
+    /// method exists but is a host method, and `Ok(None)` if it doesn't exist.
+    pub fn class_find_guest_imp(&self, class: Class, sel: SEL) -> Result<Option<GuestIMP>, ()> {
+        let mut class = class;
+        loop {
+            let &ClassHostObject {
+                superclass,
+                ref methods,
+                ..
+            } = self.borrow(class);
+            match methods.get(&sel) {
+                Some(IMP::Guest(g)) => return Ok(Some(*g)),
+                Some(IMP::Host(_)) => return Err(()),
+                None if superclass == nil => return Ok(None),
+                None => class = superclass,
+            }
+        }
+    }
+
+    /// Replaces (or adds) a method on a class with a host implementation.
+    /// Used for app-specific workarounds.
+    pub fn override_method_with_host(&mut self, class: Class, sel: SEL, imp: &'static dyn HostIMP) {
+        self.borrow_mut::<ClassHostObject>(class)
+            .methods
+            .insert(sel, IMP::Host(imp));
+    }
+
     /// Variant of `class_has_method` which doesn't account for inheritance.
     pub fn class_has_uninherited_method(&self, class: Class, sel: SEL) -> bool {
         let ClassHostObject { methods, .. } = self.borrow(class);

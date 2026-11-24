@@ -22,7 +22,9 @@ use crate::frameworks::uikit::ui_device::{
     UIDeviceOrientationLandscapeLeft, UIDeviceOrientationLandscapeRight,
     UIDeviceOrientationPortraitUpsideDown,
 };
-use crate::objc::{id, msg, msg_class, msg_super, nil, objc_classes, ClassExports};
+use crate::objc::{
+    id, msg, msg_class, msg_super, nil, objc_classes, release, retain, ClassExports,
+};
 
 #[derive(Default)]
 pub struct State {
@@ -33,6 +35,8 @@ pub struct State {
     /// The most recent window which received `makeKeyAndVisible` message.
     /// Non-retaining!
     pub key_window: Option<id>,
+    /// Root view controllers of windows (iOS 4+). Retaining.
+    pub root_view_controllers: std::collections::HashMap<id, id>,
 }
 
 pub const CLASSES: ClassExports = objc_classes! {
@@ -143,6 +147,38 @@ pub const CLASSES: ClassExports = objc_classes! {
 // "UIWindow returns the application object."
 - (id)nextResponder {
     msg_class![env; UIApplication sharedApplication]
+}
+
+- (id)rootViewController {
+    env.framework_state.uikit.ui_view.ui_window.root_view_controllers
+        .get(&this).copied().unwrap_or(nil)
+}
+
+- (())setRootViewController:(id)vc {
+    log_dbg!("[(UIWindow*){:?} setRootViewController:{:?}]", this, vc);
+    let map = &mut env.framework_state.uikit.ui_view.ui_window.root_view_controllers;
+    let old = map.get(&this).copied().unwrap_or(nil);
+    if old == vc {
+        return;
+    }
+    if vc != nil {
+        retain(env, vc);
+        env.framework_state.uikit.ui_view.ui_window.root_view_controllers.insert(this, vc);
+    } else {
+        env.framework_state.uikit.ui_view.ui_window.root_view_controllers.remove(&this);
+    }
+    if old != nil {
+        let old_view: id = msg![env; old view];
+        () = msg![env; old_view removeFromSuperview];
+        release(env, old);
+    }
+    if vc != nil {
+        // Installing a root view controller adds its view to the window.
+        let view: id = msg![env; vc view];
+        let bounds: CGRect = msg![env; this bounds];
+        () = msg![env; view setFrame:bounds];
+        () = msg![env; this addSubview:view];
+    }
 }
 
 - (())addSubview:(id)view {

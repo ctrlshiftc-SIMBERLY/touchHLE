@@ -490,6 +490,48 @@ fn strtol(env: &mut Environment, str: ConstPtr<u8>, endptr: MutPtr<MutPtr<u8>>, 
     }
 }
 
+fn strtoll(env: &mut Environment, str: ConstPtr<u8>, endptr: MutPtr<MutPtr<u8>>, base: i32) -> i64 {
+    set_errno(env, 0);
+    let bytes = env.mem.cstr_at(str).to_vec();
+    let mut i = 0;
+    while i < bytes.len() && (bytes[i] as char).is_ascii_whitespace() {
+        i += 1;
+    }
+    let mut neg = false;
+    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+        neg = bytes[i] == b'-';
+        i += 1;
+    }
+    let mut base = base as u32;
+    if (base == 0 || base == 16)
+        && i + 1 < bytes.len()
+        && bytes[i] == b'0'
+        && (bytes[i + 1] | 0x20) == b'x'
+    {
+        base = 16;
+        i += 2;
+    } else if base == 0 && i < bytes.len() && bytes[i] == b'0' {
+        base = 8;
+    } else if base == 0 {
+        base = 10;
+    }
+    let start = i;
+    let mut val: i128 = 0;
+    while i < bytes.len() {
+        let Some(d) = (bytes[i] as char).to_digit(base) else {
+            break;
+        };
+        val = (val * base as i128 + d as i128).min(i64::MAX as i128 + 1);
+        i += 1;
+    }
+    if !endptr.is_null() {
+        let end = if i == start { str } else { str + i as u32 };
+        env.mem.write(endptr, end.cast_mut());
+    }
+    let val = if neg { -val } else { val };
+    val.clamp(i64::MIN as i128, i64::MAX as i128) as i64
+}
+
 fn wcstol(
     env: &mut Environment,
     nptr: ConstPtr<wchar_t>,
@@ -685,6 +727,7 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(wcstoul(_, _, _)),
     export_c_func!(strtoull(_, _, _)),
     export_c_func!(strtol(_, _, _)),
+    export_c_func!(strtoll(_, _, _)),
     export_c_func!(wcstol(_, _, _)),
     export_c_func!(realpath(_, _)),
     export_c_func_aliased!("realpath$DARWIN_EXTSN", realpath(_, _)),
