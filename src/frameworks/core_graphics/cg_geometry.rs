@@ -15,9 +15,19 @@ use crate::dyld::{export_c_func, ConstantExports, FunctionExports, HostConstant}
 use crate::mem::SafeRead;
 use crate::Environment;
 
+// Apple's parsers (e.g. CGRectFromString) don't care about whitespace, and
+// strings without spaces like "{{2,4},{28,32}}" are common in apps' data
+// files (e.g. cocos2d sprite sheets).
 fn parse_tuple(s: &str) -> Result<(f32, f32), ()> {
-    let (a, b) = s.split_once(", ").ok_or(())?;
-    Ok((a.parse().map_err(|_| ())?, b.parse().map_err(|_| ())?))
+    let (a, b) = s.split_once(',').ok_or(())?;
+    Ok((
+        a.trim().parse().map_err(|_| ())?,
+        b.trim().parse().map_err(|_| ())?,
+    ))
+}
+
+fn strip_whitespace(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
@@ -45,6 +55,7 @@ impl GuestArg for CGPoint {
 impl std::str::FromStr for CGPoint {
     type Err = ();
     fn from_str(s: &str) -> Result<CGPoint, ()> {
+        let s = strip_whitespace(s);
         let s = s.strip_prefix('{').ok_or(())?.strip_suffix('}').ok_or(())?;
         let (x, y) = parse_tuple(s)?;
         Ok(CGPoint { x, y })
@@ -120,6 +131,7 @@ impl GuestArg for CGSize {
 impl std::str::FromStr for CGSize {
     type Err = ();
     fn from_str(s: &str) -> Result<CGSize, ()> {
+        let s = strip_whitespace(s);
         let s = s.strip_prefix('{').ok_or(())?.strip_suffix('}').ok_or(())?;
         let (w, h) = parse_tuple(s)?;
         Ok(CGSize {
@@ -201,12 +213,13 @@ impl GuestArg for CGRect {
 impl std::str::FromStr for CGRect {
     type Err = ();
     fn from_str(s: &str) -> Result<CGRect, ()> {
+        let s = strip_whitespace(s);
         let s = s
             .strip_prefix("{{")
             .ok_or(())?
             .strip_suffix("}}")
             .ok_or(())?;
-        let (a, b) = s.split_once("}, {").ok_or(())?;
+        let (a, b) = s.split_once("},{").ok_or(())?;
         let (x, y) = parse_tuple(a)?;
         let (width, height) = parse_tuple(b)?;
         Ok(CGRect {

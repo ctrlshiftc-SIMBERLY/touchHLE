@@ -9,9 +9,12 @@
 //! Every HTTP request is made to fail promptly (as if offline), which makes
 //! the game fall back to the data bundled in the app.
 
+use crate::abi::{CallFromHost, GuestFunction};
 use crate::frameworks::foundation::ns_run_loop::add_perform_request;
-use crate::objc::{blocks, id, msg_class, nil, SEL};
+use crate::mem::Ptr;
+use crate::objc::{blocks, id, msg, msg_class, nil, ObjC, SEL};
 use crate::Environment;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 fn override_method(
     env: &mut Environment,
@@ -60,6 +63,133 @@ fn bt_load_neighbor_data(_env: &mut Environment, _this: id, _cmd: SEL) {
     log!("game_hacks: skipping neighbor data (offline mode)");
 }
 
+/// Replacement for `-[PlayerData secondaryCurrency]` (gems): gems can no
+/// longer be bought, so make them unlimited.
+fn bt_unlimited_gems(_env: &mut Environment, _this: id, _cmd: SEL) -> i32 {
+    99_999
+}
+
+static ORIG_IS_PREPARED: AtomicU32 = AtomicU32::new(0);
+
+fn orig(cell: &AtomicU32) -> GuestFunction {
+    GuestFunction::from_addr_with_thumb_bit(cell.load(Ordering::Relaxed))
+}
+
+fn is_prepared(env: &mut Environment, asm: id) -> bool {
+    let sel = env.objc.lookup_selector("isPrepared").unwrap();
+    let r: u32 = orig(&ORIG_IS_PREPARED).call_from_host(env, (asm, sel));
+    (r & 0xff) != 0
+}
+
+/// Debugging aid for characters (`TOUCHHLE_NPC_DEBUG`): logs the state of
+/// an NPC's sprites periodically.
+static ORIG_NPC_UPDATE: AtomicU32 = AtomicU32::new(0);
+static DEBUG_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+fn read_ivar_u8(env: &mut Environment, obj: id, offset_var: u32) -> u8 {
+    let off: u32 = env.mem.read(Ptr::<u32, true>::from_bits(offset_var));
+    env.mem
+        .read(Ptr::<u8, true>::from_bits(obj.to_bits() + off))
+}
+fn read_ivar_u32(env: &mut Environment, obj: id, offset_var: u32) -> u32 {
+    let off: u32 = env.mem.read(Ptr::<u32, true>::from_bits(offset_var));
+    env.mem
+        .read(Ptr::<u32, true>::from_bits(obj.to_bits() + off))
+}
+
+fn bt_npc_update_debug(env: &mut Environment, this: id, cmd: SEL, dt: f32) {
+    if DEBUG_COUNTER.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
+        let asm: id = Ptr::from_bits(read_ivar_u32(env, this, 0x4b644c));
+        let prepared = asm != nil && is_prepared(env, asm);
+        let a = read_ivar_u8(env, this, 0x4b6434);
+        let b = read_ivar_u8(env, this, 0x4b6454);
+        log!(
+            "NPCDEBUG {:?} asm={:?} prepared={} flagA={} flagB={}",
+            this,
+            asm,
+            prepared,
+            a,
+            b
+        );
+        if asm != nil {
+            let root: id = msg![env; asm rootNode];
+            let parent: id = msg![env; root parent];
+            let children: id = msg![env; root children];
+            let n: u32 = if children == nil {
+                0
+            } else {
+                msg![env; children count]
+            };
+            let vis: bool = msg![env; root visible];
+            let this_vis: bool = msg![env; this visible];
+            let this_parent: id = msg![env; this parent];
+            log!(
+                "NPCDEBUG root={:?} root.parent={:?} children={} root.visible={} npc.visible={} npc.parent={:?}",
+                root, parent, n, vis, this_vis, this_parent
+            );
+            for i in 0..n.min(40) {
+                let c: id = msg![env; children objectAtIndex:i];
+                let cv: bool = msg![env; c visible];
+                let op: u8 = msg![env; c opacity];
+                let sx: f32 = msg![env; c scaleX];
+                let tex: id = msg![env; c texture];
+                let cs: crate::frameworks::core_graphics::CGSize = msg![env; c contentSize];
+                log!(
+                    "NPCDEBUG  child {} vis={} op={} sx={} tex={:?} size={:?}",
+                    i,
+                    cv,
+                    op,
+                    sx,
+                    tex,
+                    cs
+                );
+                let gc: id = msg![env; c children];
+                let gn: u32 = if gc == nil { 0 } else { msg![env; gc count] };
+                log!("NPCDEBUG   grandchildren={}", gn);
+                for j in 0..gn.min(40) {
+                    let g: id = msg![env; gc objectAtIndex:j];
+                    let gv: bool = msg![env; g visible];
+                    let gop: u8 = msg![env; g opacity];
+                    let gsx: f32 = msg![env; g scaleX];
+                    let gsy: f32 = msg![env; g scaleY];
+                    let gtex: id = msg![env; g texture];
+                    let gcs: crate::frameworks::core_graphics::CGSize = msg![env; g contentSize];
+                    let gp: crate::frameworks::core_graphics::CGPoint = msg![env; g position];
+                    let cls = ObjC::read_isa(g, &env.mem);
+                    let cname = env.objc.get_class_name(cls).to_string();
+                    log!(
+                        "NPCDEBUG   gc {} {} vis={} op={} s={},{} tex={:?} size={:?} pos={:?}",
+                        j,
+                        cname,
+                        gv,
+                        gop,
+                        gsx,
+                        gsy,
+                        gtex,
+                        gcs,
+                        gp
+                    );
+                }
+            }
+        }
+    }
+    () = orig(&ORIG_NPC_UPDATE).call_from_host(env, (this, cmd, dt));
+}
+
+fn save_orig(env: &mut Environment, class_name: &str, selector: &str, cell: &AtomicU32) -> bool {
+    let Some(sel) = env.objc.lookup_selector(selector) else {
+        return false;
+    };
+    let class = env.objc.get_known_class(class_name, &mut env.mem);
+    match env.objc.class_find_guest_imp(class, sel) {
+        Ok(Some(imp)) => {
+            cell.store(imp.addr_with_thumb_bit(), Ordering::Relaxed);
+            true
+        }
+        _ => false,
+    }
+}
+
 pub fn apply(env: &mut Environment) {
     if env.bundle.bundle_identifier() != "com.breaktime.fashion" {
         return;
@@ -69,6 +199,28 @@ pub fn apply(env: &mut Environment) {
         "BTHttpClient",
         "prepareRequest:withResponse:withSaveFile:",
         &(bt_prepare_request as fn(&mut Environment, id, SEL, id, id, id)),
+    );
+    if std::env::var_os("TOUCHHLE_NPC_DEBUG").is_some()
+        && save_orig(env, "IsoNPC", "update:", &ORIG_NPC_UPDATE)
+        && save_orig(
+            env,
+            "AnimationStateMachine",
+            "isPrepared",
+            &ORIG_IS_PREPARED,
+        )
+    {
+        override_method(
+            env,
+            "IsoNPC",
+            "update:",
+            &(bt_npc_update_debug as fn(&mut Environment, id, SEL, f32)),
+        );
+    }
+    override_method(
+        env,
+        "PlayerData",
+        "secondaryCurrency",
+        &(bt_unlimited_gems as fn(&mut Environment, id, SEL) -> i32),
     );
     override_method(
         env,

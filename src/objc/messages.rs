@@ -189,7 +189,7 @@ fn objc_msgSend_inner(
     let message_type_info = env.objc.message_type_info.take();
 
     if let Some(filters) = trace_filters() {
-        let sel_str = selector.as_str(&env.mem);
+        let sel_str = selector.as_str(&env.mem).to_string();
         if filters.iter().any(|f| sel_str.contains(f.as_str())) {
             let cls = if receiver == nil {
                 "nil".to_string()
@@ -197,7 +197,35 @@ fn objc_msgSend_inner(
                 let c = ObjC::read_isa(receiver, &env.mem);
                 env.objc.try_get_class_name(c).unwrap_or("?").to_string()
             };
-            log!("TRACE: [{} {}] receiver={:?}", cls, sel_str, receiver);
+            let r = env.cpu.regs();
+            let arg_str = {
+                let a: id = crate::mem::Ptr::from_bits(r[2]);
+                if r[2] > 0x1000
+                    && env.objc.get_host_object(a).is_some_and(|h| {
+                        h.as_any()
+                            .is::<crate::frameworks::foundation::ns_string::StringHostObject>()
+                    })
+                {
+                    crate::frameworks::foundation::ns_string::to_rust_string(env, a).to_string()
+                } else if r[2] > 0x1000 && env.objc.get_host_object(a).is_some() {
+                    let c = ObjC::read_isa(a, &env.mem);
+                    format!("<{}>", env.objc.try_get_class_name(c).unwrap_or("?"))
+                } else {
+                    String::new()
+                }
+            };
+            let r = env.cpu.regs();
+            log!("TRACEARG {:?}", arg_str);
+            log!(
+                "TRACE: [{} {}] receiver={:?} r2={:#x} ({}) r3={:#x} ({})",
+                cls,
+                sel_str,
+                receiver,
+                r[2],
+                f32::from_bits(r[2]),
+                r[3],
+                f32::from_bits(r[3])
+            );
         }
     }
 
@@ -739,6 +767,7 @@ fn trace_filters() -> Option<&'static Vec<String>> {
     F.get_or_init(|| {
         std::env::var("TOUCHHLE_TRACE_SEL")
             .ok()
+            .filter(|v| !v.is_empty())
             .map(|v| v.split(',').map(|s| s.to_string()).collect())
     })
     .as_ref()

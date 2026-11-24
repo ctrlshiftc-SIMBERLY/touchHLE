@@ -90,7 +90,7 @@ unsafe impl SafeRead for cfstringStruct {}
 type Utf16String = Vec<u16>;
 
 /// Belongs to _touchHLE_NSString.
-enum StringHostObject {
+pub(crate) enum StringHostObject {
     Utf8(Cow<'static, str>),
     /// Not necessarily well-formed UTF-16: might contain unpaired surrogates.
     Utf16(Utf16String),
