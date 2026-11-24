@@ -35,7 +35,88 @@ enum PixelStore {
 const PNG_MAGIC_NUMBER: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
 
 impl Image {
+    /// Minimal decoder for uncompressed 8-bit RGB(A)/grey TIFFs (as used for
+    /// some Particle Designer textures). stb_image doesn't support TIFF.
+    fn from_tiff_bytes(bytes: &[u8]) -> Result<Image, String> {
+        let be = bytes[0] == b'M';
+        let rd16 = |o: usize| -> Result<u32, String> {
+            let b = bytes.get(o..o + 2).ok_or("truncated TIFF")?;
+            Ok(if be { u16::from_be_bytes([b[0], b[1]]) } else { u16::from_le_bytes([b[0], b[1]]) } as u32)
+        };
+        let rd32 = |o: usize| -> Result<u32, String> {
+            let b = bytes.get(o..o + 4).ok_or("truncated TIFF")?;
+            let a = [b[0], b[1], b[2], b[3]];
+            Ok(if be { u32::from_be_bytes(a) } else { u32::from_le_bytes(a) })
+        };
+        let ifd = rd32(4)? as usize;
+        let n = rd16(ifd)? as usize;
+        let (mut width, mut height, mut spp, mut compression) = (0u32, 0u32, 1u32, 1u32);
+        let mut bps = 8u32;
+        let mut extra_associated = false;
+        let mut offsets: Vec<u32> = Vec::new();
+        let mut counts: Vec<u32> = Vec::new();
+        for i in 0..n {
+            let e = ifd + 2 + i * 12;
+            let tag = rd16(e)?;
+            let ty = rd16(e + 2)?;
+            let count = rd32(e + 4)? as usize;
+            let size = match ty { 3 => 2, 4 => 4, _ => 1 };
+            let base = if size * count <= 4 { e + 8 } else { rd32(e + 8)? as usize };
+            let val = |k: usize| -> Result<u32, String> {
+                if ty == 3 { rd16(base + k * 2) } else if ty == 4 { rd32(base + k * 4) } else {
+                    Ok(*bytes.get(base + k).ok_or("truncated TIFF")? as u32)
+                }
+            };
+            match tag {
+                256 => width = val(0)?,
+                257 => height = val(0)?,
+                258 => bps = val(0)?,
+                259 => compression = val(0)?,
+                277 => spp = val(0)?,
+                273 => offsets = (0..count).map(val).collect::<Result<_, _>>()?,
+                279 => counts = (0..count).map(val).collect::<Result<_, _>>()?,
+                338 => extra_associated = val(0)? == 1,
+                _ => (),
+            }
+        }
+        if compression != 1 || bps != 8 || !(1..=4).contains(&spp) {
+            return Err(format!("unsupported TIFF (compression {}, {} bits, {} samples)", compression, bps, spp));
+        }
+        let mut data = Vec::new();
+        for (o, c) in offsets.iter().zip(counts.iter()) {
+            data.extend_from_slice(bytes.get(*o as usize..(*o + *c) as usize).ok_or("truncated TIFF")?);
+        }
+        let spp = spp as usize;
+        let count = (width * height) as usize;
+        if data.len() < count * spp {
+            return Err("truncated TIFF pixel data".to_string());
+        }
+        let mut pixels = Vec::with_capacity(count * 4);
+        for px in data.chunks(spp).take(count) {
+            let (mut r, mut g, mut b, a) = match spp {
+                1 => (px[0], px[0], px[0], 255),
+                2 => (px[0], px[0], px[0], px[1]),
+                3 => (px[0], px[1], px[2], 255),
+                _ => (px[0], px[1], px[2], px[3]),
+            };
+            if extra_associated && a != 0 && a != 255 {
+                let un = |c: u8| ((c as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8;
+                r = un(r);
+                g = un(g);
+                b = un(b);
+            }
+            pixels.extend_from_slice(&[r, g, b, a]);
+        }
+        Ok(Image {
+            pixels: PixelStore::Vec(pixels),
+            dimensions: (width, height),
+        })
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Result<Image, String> {
+        if bytes.starts_with(b"MM\0*") || bytes.starts_with(b"II*\0") {
+            return Self::from_tiff_bytes(bytes);
+        }
         let len: c_int = bytes.len().try_into().unwrap();
 
         let mut x: c_int = 0;

@@ -44,7 +44,9 @@ public class MainActivity extends SDLActivity {
         super.onCreate(savedInstanceState);
         // No apps yet? Offer a file picker so the user can add one without
         // needing a file manager that can reach Android/data.
-        if (savedInstanceState == null && !hasAnyApps()) {
+        boolean addGame = getIntent() != null && getIntent().getComponent() != null
+                && getIntent().getComponent().getClassName().endsWith("AddGameAlias");
+        if (savedInstanceState == null && (addGame || !hasAnyApps())) {
             try {
                 Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
                 pick.addCategory(Intent.CATEGORY_OPENABLE);

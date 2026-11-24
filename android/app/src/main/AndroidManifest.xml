@@ -108,6 +108,19 @@
             -->
         </activity>
 
+        <!-- Second launcher icon that always opens the file picker, so more
+             games can be added. -->
+        <activity-alias
+            android:name="org.touchhle.android.AddGameAlias"
+            android:targetActivity="org.touchhle.android.MainActivity"
+            android:label="Add game"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
         <provider
             android:name="org.touchhle.android.DocumentsProvider"
             android:authorities="${applicationId}.provider"

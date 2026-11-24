@@ -193,17 +193,113 @@ fn save_orig(env: &mut Environment, class_name: &str, selector: &str, cell: &Ato
 /// Replacement for `-[PlayerData changeSecondaryCurrency:]`: gems never run
 /// out, so spending always succeeds. The ivar is also kept topped up, since
 /// some code reads it directly.
+/// Address of `_OBJC_IVAR_$_PlayerData._secondaryCurrency` (differs per game).
+static GEMS_IVAR_OFFSET_VAR: AtomicU32 = AtomicU32::new(0);
+
+fn apply_hide_missing_art(env: &mut Environment, game: u32) {
+    GAME.store(game, Ordering::Relaxed);
+    if save_orig(env, "StoreItemData", "isActive", &ORIG_IS_ACTIVE) {
+        override_method(
+            env,
+            "StoreItemData",
+            "isActive",
+            &(bt_store_item_is_active as fn(&mut Environment, id, SEL) -> bool),
+        );
+    }
+    if save_orig(env, "IngredientDatabase", "getData", &ORIG_INGREDIENTS_GET_DATA) {
+        override_method(
+            env,
+            "IngredientDatabase",
+            "getData",
+            &(bt_ingredients_get_data as fn(&mut Environment, id, SEL) -> id),
+        );
+    }
+}
+
+fn apply_unlimited_gems(env: &mut Environment, ivar_offset_var: u32) {
+    GEMS_IVAR_OFFSET_VAR.store(ivar_offset_var, Ordering::Relaxed);
+    override_method(
+        env,
+        "PlayerData",
+        "secondaryCurrency",
+        &(bt_unlimited_gems as fn(&mut Environment, id, SEL) -> i32),
+    );
+    override_method(
+        env,
+        "PlayerData",
+        "changeSecondaryCurrency:",
+        &(bt_change_gems as fn(&mut Environment, id, SEL, i32) -> bool),
+    );
+}
+
 fn bt_change_gems(env: &mut Environment, this: id, _cmd: SEL, _amount: i32) -> bool {
-    const SECONDARY_CURRENCY_IVAR_OFFSET_VAR: u32 = 0x4b6118;
-    let off: u32 = env
-        .mem
-        .read(Ptr::<u32, true>::from_bits(SECONDARY_CURRENCY_IVAR_OFFSET_VAR));
+    let off_var = GEMS_IVAR_OFFSET_VAR.load(Ordering::Relaxed);
+    let off: u32 = env.mem.read(Ptr::<u32, true>::from_bits(off_var));
     env.mem
         .write(Ptr::<i32, true>::from_bits(this.to_bits() + off), 99_999);
     true
 }
 
 static ORIG_IS_ACTIVE: AtomicU32 = AtomicU32::new(0);
+static ORIG_POTIONS_GET_DATA: AtomicU32 = AtomicU32::new(0);
+
+/// Which game's hidden-item lists to use: 1 = Dream Dresses, 2 = Sweet Shop.
+static GAME: AtomicU32 = AtomicU32::new(0);
+
+fn hidden_store_assets() -> &'static [&'static str] {
+    use crate::game_hacks_hidden::*;
+    match GAME.load(Ordering::Relaxed) {
+        1 => FASHION_HIDDEN_STORE_ASSETS,
+        2 => WONKA_HIDDEN_STORE_ASSETS,
+        _ => &[],
+    }
+}
+fn hidden_products() -> &'static [&'static str] {
+    use crate::game_hacks_hidden::*;
+    match GAME.load(Ordering::Relaxed) {
+        1 => FASHION_HIDDEN_DRESSES,
+        2 => WONKA_HIDDEN_CANDIES,
+        _ => &[],
+    }
+}
+fn hidden_ingredients() -> &'static [&'static str] {
+    use crate::game_hacks_hidden::*;
+    match GAME.load(Ordering::Relaxed) {
+        1 => FASHION_HIDDEN_INGREDIENTS,
+        2 => WONKA_HIDDEN_INGREDIENTS,
+        _ => &[],
+    }
+}
+
+/// Returns a new array without the items whose `id_sel` is in `hidden`.
+/// Non-arrays are returned unchanged.
+fn filter_items(env: &mut Environment, all: id, id_sel: &str, hidden: &[&str]) -> id {
+    let array_class: crate::objc::Class = msg_class![env; NSArray class];
+    if all == nil || !msg![env; all isKindOfClass:array_class] {
+        return all;
+    }
+    let sel = env.objc.register_host_selector(id_sel.to_string(), &mut env.mem);
+    let res: id = msg_class![env; NSMutableArray array];
+    let count: u32 = msg![env; all count];
+    for i in 0..count {
+        let item: id = msg![env; all objectAtIndex:i];
+        let item_id: id = crate::objc::msg_send(env, (item, sel));
+        let is_hidden = item_id != nil && {
+            let name = crate::frameworks::foundation::ns_string::to_rust_string(env, item_id);
+            hidden.contains(&&*name)
+        };
+        if !is_hidden {
+            () = msg![env; res addObject:item];
+        }
+    }
+    res
+}
+
+/// Replacement for `-[PotionDatabase getData]` (Sweet Shop's candy list).
+fn bt_potions_get_data(env: &mut Environment, this: id, cmd: SEL) -> id {
+    let all: id = orig(&ORIG_POTIONS_GET_DATA).call_from_host(env, (this, cmd));
+    filter_items(env, all, "ID", hidden_products())
+}
 static ORIG_DRESSES_SORTED: AtomicU32 = AtomicU32::new(0);
 
 /// Replacement for `-[StoreItemData isActive]`: items whose artwork is
@@ -213,7 +309,7 @@ fn bt_store_item_is_active(env: &mut Environment, this: id, cmd: SEL) -> bool {
     let asset_id: id = msg![env; this getAssetId];
     if asset_id != nil {
         let name = crate::frameworks::foundation::ns_string::to_rust_string(env, asset_id);
-        if crate::game_hacks_hidden::HIDDEN_STORE_ASSETS.contains(&&*name) {
+        if hidden_store_assets().contains(&&*name) {
             return false;
         }
     }
@@ -225,23 +321,7 @@ fn bt_store_item_is_active(env: &mut Environment, this: id, cmd: SEL) -> bool {
 /// artwork or supplies are missing, so they're not in the sewing list.
 fn bt_dresses_sorted(env: &mut Environment, this: id, cmd: SEL) -> id {
     let all: id = orig(&ORIG_DRESSES_SORTED).call_from_host(env, (this, cmd));
-    if all == nil {
-        return nil;
-    }
-    let res: id = msg_class![env; NSMutableArray array];
-    let count: u32 = msg![env; all count];
-    for i in 0..count {
-        let dress: id = msg![env; all objectAtIndex:i];
-        let dress_id: id = msg![env; dress Id];
-        let hidden = dress_id != nil && {
-            let name = crate::frameworks::foundation::ns_string::to_rust_string(env, dress_id);
-            crate::game_hacks_hidden::HIDDEN_DRESSES.contains(&&*name)
-        };
-        if !hidden {
-            () = msg![env; res addObject:dress];
-        }
-    }
-    res
+    filter_items(env, all, "Id", hidden_products())
 }
 
 static ORIG_INGREDIENTS_GET_DATA: AtomicU32 = AtomicU32::new(0);
@@ -250,24 +330,7 @@ static ORIG_INGREDIENTS_GET_DATA: AtomicU32 = AtomicU32::new(0);
 /// leaves out supplies whose artwork is missing.
 fn bt_ingredients_get_data(env: &mut Environment, this: id, cmd: SEL) -> id {
     let all: id = orig(&ORIG_INGREDIENTS_GET_DATA).call_from_host(env, (this, cmd));
-    let array_class: crate::objc::Class = msg_class![env; NSArray class];
-    if all == nil || !msg![env; all isKindOfClass:array_class] {
-        return all;
-    }
-    let res: id = msg_class![env; NSMutableArray array];
-    let count: u32 = msg![env; all count];
-    for i in 0..count {
-        let item: id = msg![env; all objectAtIndex:i];
-        let item_id: id = msg![env; item ID];
-        let hidden = item_id != nil && {
-            let name = crate::frameworks::foundation::ns_string::to_rust_string(env, item_id);
-            crate::game_hacks_hidden::HIDDEN_INGREDIENTS.contains(&&*name)
-        };
-        if !hidden {
-            () = msg![env; res addObject:item];
-        }
-    }
-    res
+    filter_items(env, all, "ID", hidden_ingredients())
 }
 
 /// Replacements for `-[ClerkData skin]`/`outfit`: the buyable clerks' looks
@@ -282,9 +345,50 @@ fn bt_clerk_outfit(env: &mut Environment, _this: id, _cmd: SEL) -> id {
 fn bt_skip_tutorial(_env: &mut Environment, _this: id, _cmd: SEL, _t: id) {}
 
 pub fn apply(env: &mut Environment) {
-    if env.bundle.bundle_identifier() != "com.breaktime.fashion" {
-        return;
+    match env.bundle.bundle_identifier() {
+        "com.breaktime.fashion" => apply_fashion(env),
+        "com.breaktime.wonka" => apply_wonka(env),
+        _ => (),
     }
+}
+
+/// Sweet Shop (com.breaktime.wonka): same Breaktime engine as Dream Dresses.
+fn apply_wonka(env: &mut Environment) {
+    override_method(
+        env,
+        "BTHttpClient",
+        "prepareRequest:withResponse:withSaveFile:",
+        &(bt_prepare_request as fn(&mut Environment, id, SEL, id, id, id)),
+    );
+    override_method(
+        env,
+        "StaticDataManager",
+        "loadNeighborData",
+        &(bt_load_neighbor_data as fn(&mut Environment, id, SEL)),
+    );
+    apply_unlimited_gems(env, 0x47975c);
+    apply_hide_missing_art(env, 2);
+    if save_orig(env, "PotionDatabase", "getData", &ORIG_POTIONS_GET_DATA) {
+        override_method(
+            env,
+            "PotionDatabase",
+            "getData",
+            &(bt_potions_get_data as fn(&mut Environment, id, SEL) -> id),
+        );
+    }
+    if std::env::var_os("TOUCHHLE_SKIP_TUTORIAL").is_some() {
+        override_method(
+            env,
+            "TutorialManager",
+            "startTutorial:",
+            &(bt_skip_tutorial as fn(&mut Environment, id, SEL, id)),
+        );
+    }
+}
+
+fn apply_fashion(env: &mut Environment) {
+    apply_unlimited_gems(env, 0x4b6118);
+    apply_hide_missing_art(env, 1);
     override_method(
         env,
         "BTHttpClient",
@@ -315,40 +419,12 @@ pub fn apply(env: &mut Environment) {
             &(bt_skip_tutorial as fn(&mut Environment, id, SEL, id)),
         );
     }
-    override_method(
-        env,
-        "PlayerData",
-        "secondaryCurrency",
-        &(bt_unlimited_gems as fn(&mut Environment, id, SEL) -> i32),
-    );
-    override_method(
-        env,
-        "PlayerData",
-        "changeSecondaryCurrency:",
-        &(bt_change_gems as fn(&mut Environment, id, SEL, i32) -> bool),
-    );
-    if save_orig(env, "StoreItemData", "isActive", &ORIG_IS_ACTIVE) {
-        override_method(
-            env,
-            "StoreItemData",
-            "isActive",
-            &(bt_store_item_is_active as fn(&mut Environment, id, SEL) -> bool),
-        );
-    }
     if save_orig(env, "DressDatabase", "sorted", &ORIG_DRESSES_SORTED) {
         override_method(
             env,
             "DressDatabase",
             "sorted",
             &(bt_dresses_sorted as fn(&mut Environment, id, SEL) -> id),
-        );
-    }
-    if save_orig(env, "IngredientDatabase", "getData", &ORIG_INGREDIENTS_GET_DATA) {
-        override_method(
-            env,
-            "IngredientDatabase",
-            "getData",
-            &(bt_ingredients_get_data as fn(&mut Environment, id, SEL) -> id),
         );
     }
     override_method(

@@ -419,7 +419,10 @@ impl Environment {
         let mut mem = mem::Mem::new();
 
         // Apps that need a lot of missing functionality to be tolerated.
-        if bundle.bundle_identifier() == "com.breaktime.fashion" {
+        if matches!(
+            bundle.bundle_identifier(),
+            "com.breaktime.fashion" | "com.breaktime.wonka"
+        ) {
             objc::set_tolerant_mode(true);
         }
 

@@ -221,6 +221,9 @@ fn CGImageGetColorSpace(env: &mut Environment, _image: CGImageRef) -> CGColorSpa
 }
 
 pub fn CGImageGetWidth(env: &mut Environment, image: CGImageRef) -> GuestUSize {
+    if image == nil {
+        return 0;
+    }
     let (width, _height) = env
         .objc
         .borrow::<CGImageHostObject>(image)
@@ -229,6 +232,9 @@ pub fn CGImageGetWidth(env: &mut Environment, image: CGImageRef) -> GuestUSize {
     width
 }
 pub fn CGImageGetHeight(env: &mut Environment, image: CGImageRef) -> GuestUSize {
+    if image == nil {
+        return 0;
+    }
     let (_width, height) = env
         .objc
         .borrow::<CGImageHostObject>(image)
@@ -240,6 +246,9 @@ fn CGImageGetBitsPerPixel(_env: &mut Environment, _image: CGImageRef) -> GuestUS
     32
 }
 fn CGImageGetBytesPerRow(env: &mut Environment, image: CGImageRef) -> GuestUSize {
+    if image == nil {
+        return 0;
+    }
     let (width, _height) = env
         .objc
         .borrow::<CGImageHostObject>(image)

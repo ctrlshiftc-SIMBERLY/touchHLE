@@ -131,9 +131,20 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (id)initWithData:(id)data { // NSData*
+    if data == nil {
+        release(env, this);
+        return nil;
+    }
     let slice = ns_data::to_rust_slice(env, data);
     // TODO: refactor common parts
-    let image = Image::from_bytes(slice).unwrap();
+    let image = match Image::from_bytes(slice) {
+        Ok(image) => image,
+        Err(e) => {
+            log!("Warning: [UIImage initWithData:] failed ({}), returning nil", e);
+            release(env, this);
+            return nil;
+        }
+    };
     let cg_image = cg_image::from_image(env, image);
     env.objc.borrow_mut::<UIImageHostObject>(this).cg_image = cg_image;
     this
